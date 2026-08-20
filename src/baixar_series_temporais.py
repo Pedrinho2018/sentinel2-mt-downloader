@@ -45,11 +45,14 @@ def extensao(url: str) -> str:
 def interpretar_item(item) -> tuple[str, datetime] | None:
     match = PADRAO_ID.search(item.id)
     if match:
-        data = datetime.strptime(match.group("data"), "%Y%m%d")
-        return match.group("tile"), data
+        return match.group("tile"), datetime.strptime(match.group("data"), "%Y%m%d")
 
     if item.datetime:
-        tile = str(item.properties.get("bdc:tile") or item.properties.get("tile") or "").strip()
+        tile = str(
+            item.properties.get("bdc:tile")
+            or item.properties.get("tile")
+            or ""
+        ).strip()
         if tile:
             return tile, item.datetime.replace(tzinfo=None)
     return None
@@ -133,6 +136,28 @@ def salvar_csv(caminho: Path, registros: list[dict]) -> None:
         writer.writerows(registros)
 
 
+def baixar_bandas_cena(
+    entrada: dict,
+    bandas: list[str],
+    sessao: requests.Session,
+    timeout: int,
+    chunk_mb: int,
+) -> tuple[bool, str]:
+    item = entrada["item"]
+    scene_dir: Path = entrada["scene_dir"]
+
+    for banda in bandas:
+        asset = localizar_asset(item, banda)
+        if asset is None:
+            return False, f"asset {banda} ausente"
+        destino = scene_dir / f"{banda}{extensao(asset.href)}"
+        try:
+            baixar(sessao, asset.href, destino, timeout, chunk_mb)
+        except Exception as exc:
+            return False, f"{banda}: {exc}"
+    return True, ""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Monta séries temporais Sentinel-2 por tile e mês para composição sem nuvens."
@@ -172,6 +197,7 @@ def main() -> int:
         else args.cenas_por_mes
     )
     nuvem_max = float(serie_cfg.get("nuvem_max_cena_pct", 60))
+    tile_teste = str(serie_cfg.get("tile_teste", "")).strip()
     pasta_base = ROOT / download_cfg["pasta"]
     catalogo = ROOT / serie_cfg["catalogo"]
     resumo_path = ROOT / serie_cfg["resumo"]
@@ -184,7 +210,7 @@ def main() -> int:
     print(f"Período: {inicio} até {fim}")
     print(f"Cenas por tile/mês: {cenas_por_mes}")
     print(f"Nuvem máxima da cena-fonte: {nuvem_max:.1f}%")
-    print("Observação: cenas-fonte podem ter nuvem; o próximo estágio faz o mosaico limpo.\n")
+    print("Observação: a cena-fonte pode ter nuvem; o mosaico usa apenas pixels limpos.\n")
 
     cliente = Client.open(stac_cfg["url"])
     busca = cliente.search(
@@ -193,7 +219,7 @@ def main() -> int:
         datetime=f"{inicio}/{fim}",
     )
 
-    grupos: dict[tuple[str, str], list[tuple[object, datetime]]] = defaultdict(list)
+    grupos_todos: dict[tuple[str, str], list[tuple[object, datetime]]] = defaultdict(list)
     itens_lidos = 0
     ignorados_id = 0
 
@@ -205,21 +231,24 @@ def main() -> int:
             ignorados_id += 1
             continue
         tile_id, data = info
-        if args.tile and tile_id != args.tile:
-            continue
         mes = data.strftime("%Y-%m")
-        grupos[(tile_id, mes)].append((item, data))
+        grupos_todos[(tile_id, mes)].append((item, data))
 
-    tiles = sorted({tile for tile, _ in grupos})
+    tiles_disponiveis = sorted({tile for tile, _ in grupos_todos})
     if args.tile:
-        tiles = [tile for tile in tiles if tile == args.tile]
+        tiles = [args.tile] if args.tile in tiles_disponiveis else []
+    elif max_tiles == 1 and tile_teste and tile_teste in tiles_disponiveis:
+        tiles = [tile_teste]
     elif max_tiles > 0:
-        tiles = tiles[:max_tiles]
+        tiles = tiles_disponiveis[:max_tiles]
+    else:
+        tiles = tiles_disponiveis
 
+    tiles_set = set(tiles)
     grupos = {
         chave: valor
-        for chave, valor in grupos.items()
-        if chave[0] in set(tiles)
+        for chave, valor in grupos_todos.items()
+        if chave[0] in tiles_set
     }
 
     if not grupos:
@@ -230,12 +259,13 @@ def main() -> int:
     print(f"Grupos tile/mês: {len(grupos)}")
 
     sessao = requests.Session()
-    sessao.headers.update({"User-Agent": "sentinel2-mt-downloader/temporal-series-1.0"})
+    sessao.headers.update({"User-Agent": "sentinel2-mt-downloader/temporal-series-1.1"})
     registros: list[dict] = []
     selecionadas_total = 0
-    erros = 0
+    grupos_com_fontes = 0
+    avisos = 0
 
-    print("\n[2/3] Avaliando SCL e escolhendo as melhores fontes de cada mês...")
+    print("\n[2/3] Avaliando SCL e escolhendo fontes complementares...")
 
     for (tile_id, mes), candidatos in sorted(grupos.items()):
         print(f"\n[TILE {tile_id} | {mes}] candidatos: {len(candidatos)}")
@@ -251,8 +281,6 @@ def main() -> int:
                     {
                         "item": item,
                         "data": data,
-                        "tile": tile_id,
-                        "mes": mes,
                         "nuvem": 100.0,
                         "status": "sem_scl",
                         "scene_dir": scene_dir,
@@ -260,6 +288,7 @@ def main() -> int:
                         "erro": "asset SCL ausente",
                     }
                 )
+                avisos += 1
                 continue
 
             scl_path = scene_dir / "qualidade" / f"SCL{extensao(scl_asset.href)}"
@@ -267,21 +296,19 @@ def main() -> int:
                 baixar(sessao, scl_asset.href, scl_path, timeout, chunk_mb)
                 nuvem = percentual_nuvem_scl(scl_path)
                 status = "candidata" if nuvem <= nuvem_max else "rejeitada_nuvem"
-                print(f"  {data.date()} | {item.id} | nuvem/sombra={nuvem:.2f}% | {status}")
                 erro = ""
+                print(f"  {data.date()} | {item.id} | nuvem/sombra={nuvem:.2f}% | {status}")
             except Exception as exc:
                 nuvem = 100.0
                 status = "erro_scl"
                 erro = str(exc)
-                erros += 1
-                print(f"  [ERRO] {item.id}: {exc}")
+                avisos += 1
+                print(f"  [AVISO] {item.id}: {exc}")
 
             avaliados.append(
                 {
                     "item": item,
                     "data": data,
-                    "tile": tile_id,
-                    "mes": mes,
                     "nuvem": nuvem,
                     "status": status,
                     "scene_dir": scene_dir,
@@ -291,44 +318,48 @@ def main() -> int:
             )
 
         elegiveis = [a for a in avaliados if a["status"] == "candidata"]
-        elegiveis.sort(key=lambda a: (a["nuvem"], abs(a["data"].day - 15), a["data"]))
-        selecionadas = elegiveis[: max(1, cenas_por_mes)]
-        ids_selecionados = {a["item"].id for a in selecionadas}
+        elegiveis.sort(
+            key=lambda a: (
+                a["nuvem"],
+                abs(a["data"].day - 15),
+                a["data"],
+            )
+        )
+
+        selecionados_ids: set[str] = set()
+        for entrada in elegiveis:
+            if len(selecionados_ids) >= max(1, cenas_por_mes):
+                break
+            item = entrada["item"]
+            print(f"  -> tentando selecionar: {item.id}")
+            ok, erro = baixar_bandas_cena(
+                entrada,
+                bandas,
+                sessao,
+                timeout,
+                chunk_mb,
+            )
+            if ok:
+                selecionados_ids.add(item.id)
+                entrada["status"] = "selecionada"
+                entrada["erro"] = ""
+                selecionadas_total += 1
+                print("     [OK] bandas científicas disponíveis")
+            else:
+                entrada["status"] = "erro_bandas"
+                entrada["erro"] = erro
+                avisos += 1
+                print(f"     [AVISO] {erro}; tentando próxima candidata")
+
+        if selecionados_ids:
+            grupos_com_fontes += 1
 
         for entrada in avaliados:
             item = entrada["item"]
-            selecionada = item.id in ids_selecionados
+            selecionada = item.id in selecionados_ids
             status = entrada["status"]
-
             if status == "candidata" and not selecionada:
                 status = "fora_limite_mensal"
-
-            if selecionada:
-                print(f"  -> SELECIONADA: {item.id}")
-                scene_dir: Path = entrada["scene_dir"]
-                falha_banda = False
-                for banda in bandas:
-                    asset = localizar_asset(item, banda)
-                    if asset is None:
-                        falha_banda = True
-                        erros += 1
-                        entrada["erro"] = f"asset {banda} ausente"
-                        break
-                    destino = scene_dir / f"{banda}{extensao(asset.href)}"
-                    try:
-                        baixar(sessao, asset.href, destino, timeout, chunk_mb)
-                    except Exception as exc:
-                        falha_banda = True
-                        erros += 1
-                        entrada["erro"] = f"{banda}: {exc}"
-                        break
-
-                if falha_banda:
-                    selecionada = False
-                    status = "erro_bandas"
-                else:
-                    status = "selecionada"
-                    selecionadas_total += 1
 
             registros.append(
                 {
@@ -356,18 +387,25 @@ def main() -> int:
         "itens_stac_lidos": itens_lidos,
         "itens_sem_tile_data": ignorados_id,
         "grupos_tile_mes": len(grupos),
+        "grupos_com_ao_menos_uma_fonte": grupos_com_fontes,
         "cenas_selecionadas": selecionadas_total,
         "cenas_por_tile_mes": cenas_por_mes,
         "nuvem_max_cena_pct": nuvem_max,
-        "erros": erros,
+        "avisos": avisos,
         "catalogo": str(catalogo.relative_to(ROOT)),
     }
     resumo_path.parent.mkdir(parents=True, exist_ok=True)
-    resumo_path.write_text(json.dumps(resumo, ensure_ascii=False, indent=2), encoding="utf-8")
+    resumo_path.write_text(
+        json.dumps(resumo, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
     print("\n=== RESUMO ===")
     print(json.dumps(resumo, ensure_ascii=False, indent=2))
-    return 0 if erros == 0 else 1
+    if selecionadas_total == 0:
+        print("[ERRO] Nenhuma cena-fonte foi selecionada.")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
