@@ -1,11 +1,11 @@
 pkgname=sentinel2-mt-downloader-bin
 pkgver=@VERSION@
 pkgrel=1
-pkgdesc="Downloader e sincronizador de imagens Sentinel-2 de Mato Grosso"
+pkgdesc="Interface gráfica para download e sincronização de imagens Sentinel-2 de Mato Grosso"
 arch=('x86_64')
 url="https://github.com/coldrenatinho/sentinel2-mt-downloader"
 license=('custom')
-depends=('glibc')
+depends=('glibc' 'libgl' 'libxkbcommon-x11' 'nss' 'alsa-lib' 'dbus' 'fontconfig' 'xcb-util-cursor')
 provides=('sentinel2-mt-downloader')
 conflicts=('sentinel2-mt-downloader')
 source=(
