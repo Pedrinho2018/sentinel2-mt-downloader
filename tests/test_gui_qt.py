@@ -154,6 +154,30 @@ class TestGuiQt(TestCase):
         self.assertTrue(self.janela.btn_executar.isEnabled())
         self.assertFalse(self.janela.btn_cancelar.isEnabled())
 
+    def test_execucao_mantem_selecao_legivel_para_proxima_operacao(self) -> None:
+        indice = self.janela.operacao.findData("baixar")
+        self.janela.operacao.setCurrentIndex(indice)
+
+        self.janela._definir_execucao(True, "Executando")
+
+        self.assertTrue(self.janela.operacao.isEnabled())
+        self.assertTrue(self.janela.max_execucao.isEnabled())
+        self.assertFalse(self.janela.btn_executar.isEnabled())
+        self.assertTrue(self.janela.btn_cancelar.isEnabled())
+        grupo = gui.QtGui.QPalette.ColorGroup.Disabled
+        papel = gui.QtGui.QPalette.ColorRole
+        paleta = self.app.palette()
+        self.assertEqual(
+            paleta.color(grupo, papel.Text).name(),
+            gui.CORES["desabilitado_texto"],
+        )
+        self.assertEqual(
+            paleta.color(grupo, papel.Base).name(),
+            gui.CORES["desabilitado_fundo"],
+        )
+
+        self.janela._definir_execucao(False, "Pronto")
+
     def test_cancela_operacao_em_andamento(self) -> None:
         script = self.pasta / "cli_lenta.py"
         script.write_text(

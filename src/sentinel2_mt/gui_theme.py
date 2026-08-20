@@ -28,8 +28,8 @@ CORES = {
     "preview_texto": "#43534d",
     "status_fundo": "#e5f7ee",
     "status_texto": "#135f3d",
-    "desabilitado_fundo": "#e8edeb",
-    "desabilitado_texto": "#596660",
+    "desabilitado_fundo": "#e1e8e5",
+    "desabilitado_texto": "#26332e",
 }
 
 
@@ -47,6 +47,11 @@ PARES_CONTRASTE = {
     "log": ("log_texto", "log_fundo", 4.5),
     "preview": ("preview_texto", "preview_fundo", 4.5),
     "status": ("status_texto", "status_fundo", 4.5),
+    "controle desabilitado": (
+        "desabilitado_texto",
+        "desabilitado_fundo",
+        4.5,
+    ),
 }
 
 
@@ -111,7 +116,18 @@ QComboBox:focus, QPlainTextEdit:focus, QListWidget:focus, QTreeWidget:focus {
 }
 QLineEdit:disabled, QDateEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled,
 QComboBox:disabled, QPlainTextEdit:disabled {
-    color: %(desabilitado_texto)s; background: %(desabilitado_fundo)s;
+    color: %(desabilitado_texto)s; background-color: %(desabilitado_fundo)s;
+    border-color: %(borda)s;
+}
+QComboBox:disabled::drop-down {
+    background-color: %(desabilitado_fundo)s; border-left: 1px solid %(borda)s;
+}
+QSpinBox:disabled::up-button, QSpinBox:disabled::down-button,
+QDoubleSpinBox:disabled::up-button, QDoubleSpinBox:disabled::down-button {
+    background-color: %(desabilitado_fundo)s; border-left: 1px solid %(borda)s;
+}
+QComboBox:disabled QAbstractItemView {
+    color: %(desabilitado_texto)s; background-color: %(desabilitado_fundo)s;
 }
 QCheckBox { color: %(texto)s; spacing: 8px; }
 QComboBox QAbstractItemView, QMenu, QCalendarWidget, QDialog, QMessageBox {
