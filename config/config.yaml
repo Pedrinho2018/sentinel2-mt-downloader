@@ -1,103 +1,101 @@
 stac:
   url: "https://data.inpe.br/bdc/stac/v1/"
-  colecao: "S2-16D-2"
+  colecao: "S2_L2A-1"
 
 area:
   nome: "Mato Grosso"
   uf: "MT"
   bbox: [-61.65, -18.05, -50.20, -7.30]
 
-# Safra inicial usada no projeto. Pode ser sobrescrita por argumentos de linha de comando.
+  # Recorte pequeno apenas para validar o pipeline antes de escalar o estado.
+  # Fica no centro-norte de MT, região com forte presença de agricultura.
+  teste_bbox: [-56.30, -13.30, -55.00, -11.40]
+
 periodo:
   inicio: "2025-09-01"
   fim: "2026-04-30"
 
+# Bandas nativas de 10 m que serão baixadas das cenas L2A.
+# NDVI passa a ser calculado no mosaico, evitando depender de produto derivado.
 bandas:
   - "B02"
   - "B03"
   - "B04"
   - "B08"
-  - "NDVI"
 
-# Configurações compartilhadas de download.
 download:
-  pasta: "data/sentinel2"
-  timeout_segundos: 180
-  chunk_mb: 2
+  pasta: "data/sentinel2_l2a"
+  timeout_segundos: 240
+  chunk_mb: 4
 
-  # Compatibilidade com o downloader antigo/auxiliar.
+  # Compatibilidade com o downloader antigo; o pipeline principal não usa esse CSV.
   catalogo: "catalogo/catalogo_imagens.csv"
   max_itens_teste: 5
   max_candidatos_teste: 120
 
-# Compatibilidade com baixar_inpe_mt.py. Não define a lógica do novo pipeline temporal.
 qualidade:
   filtrar_nuvens: true
-  nuvem_max_pct: 5
+  nuvem_max_pct: 20
 
-# NOVO ESTÁGIO 1: coleta uma série temporal por tile e mês.
-# Uma cena individual NÃO precisa estar quase sem nuvens, porque ela será usada
-# como fonte para preencher pixels limpos no mosaico temporal.
+# ESTÁGIO 1: cenas reais Sentinel-2 L2A, agrupadas por MGRS tile e mês.
 serie_temporal:
   catalogo: "catalogo/catalogo_series.csv"
   resumo: "catalogo/resumo_series.json"
 
-  # Tile já validado nos testes anteriores; usado apenas no teste de 1 tile.
-  tile_teste: "014018"
+  # No teste, usa o bbox menor. Ao escalar, troque para false.
+  usar_bbox_teste: true
 
-  # S2-16D geralmente oferece cerca de duas composições por mês.
-  cenas_por_tile_mes: 2
-
-  # Cenas muito ruins ainda são descartadas para não gastar armazenamento à toa.
-  nuvem_max_cena_pct: 60
-
-  # Teste inicial: um tile completo ao longo de toda a safra.
-  # Use 0 para todos os tiles encontrados.
+  # O tile de teste é escolhido automaticamente pelo melhor histórico temporal.
+  tile_teste: ""
   max_tiles_teste: 1
 
-# NOVO ESTÁGIO 2: composição temporal mensal sem nuvens.
+  # Avalia até 10 aquisições no mês e guarda até 6 fontes complementares.
+  candidatos_por_tile_mes: 10
+  cenas_por_tile_mes: 6
+
+  # Cena muito ruim não vale espaço. Mesmo assim o limite é alto porque pixels
+  # limpos ainda podem preencher lacunas no mosaico.
+  nuvem_max_cena_pct: 70
+
+# ESTÁGIO 2: composição mensal a partir das cenas L2A reais.
 mosaico:
   origem_catalogo: "catalogo/catalogo_series.csv"
   pasta: "data/mosaicos_temporais"
   catalogo: "catalogo/catalogo_mosaicos.csv"
   resumo: "catalogo/resumo_mosaicos.json"
 
-  # Mantém a dimensão temporal da safra: um mosaico por tile/mês.
   agrupamento: "mensal"
   min_cenas_grupo: 2
 
-  # Classes SCL aceitas como observação limpa.
-  # 2 = dark features, 4 = vegetation, 5 = bare/not vegetated, 6 = water.
-  classes_validas_scl: [2, 4, 5, 6]
-
-  # Classes tratadas como contaminação e dilatadas antes do best-pixel.
+  # SCL Sentinel-2: 4 vegetação, 5 não vegetado/solo, 6 água.
+  # Classe 2 (dark area) fica fora para não aceitar sombra ambígua.
+  classes_validas_scl: [4, 5, 6]
   classes_ruins_scl: [3, 7, 8, 9, 10, 11]
-  margem_nuvem_px: 3
 
-  # Processamento em blocos para não estourar memória com GeoTIFFs grandes.
+  # SCL é 20 m, mas será reprojetado por nearest para a grade de 10 m.
+  # Depois aplicamos 6 pixels (~60 m) de margem ao redor de nuvens/sombras.
+  margem_nuvem_px: 6
+
   bloco_px: 1024
-
-  # A escolha do pixel prioriza a observação limpa mais próxima do centro do mês.
   metodo: "primeiro_pixel_limpo_prioridade_centro_mes"
+
+  # Mosaico com cobertura menor que isso não é liberado para catalogação.
+  cobertura_valida_min_pct: 98.0
 
   preview_max_px: 1800
   percentil_min: 2
   percentil_max: 98
   qualidade_jpeg: 95
 
-# NOVO ESTÁGIO 3: catalogação feita somente em mosaicos temporais limpos.
+# ESTÁGIO 3: somente mosaicos aprovados viram patches.
 patches:
   origem: "data/mosaicos_temporais"
   tamanho_px: 128
   passo_px: 128
   preview_saida_px: 768
 
-  # Como o mosaico já remove nuvem, aqui filtramos cobertura válida residual.
-  dados_validos_min_pct: 99
-
-  # Métrica de confiança: registra quantos pixels tinham 2+ observações limpas.
-  # Não é filtro obrigatório no primeiro teste; fica registrado no catálogo.
-  obs_2plus_min_pct: 0
+  dados_validos_min_pct: 99.5
+  obs_2plus_min_pct: 20
 
   exportar_tifs: false
   pasta: "data/patches"
