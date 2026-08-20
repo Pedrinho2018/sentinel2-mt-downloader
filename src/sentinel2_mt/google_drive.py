@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import TypeVar
 
 from .configuracao import ConfiguracaoProjeto
+from .oauth_callback import autorizar_com_pagina_oauth
 
 
 T = TypeVar("T")
@@ -24,20 +25,7 @@ class AutenticadorGoogleDrive:
 
     @staticmethod
     def _autorizar_no_navegador(fluxo):
-        # Evita que o Google reutilize silenciosamente uma conta conectada que
-        # não esteja cadastrada como testadora do projeto OAuth. O endereço IPv4
-        # explícito também impede que o navegador tente ::1 enquanto o servidor
-        # temporário está escutando apenas em IPv4.
-        return fluxo.run_local_server(
-            host="127.0.0.1",
-            bind_addr="127.0.0.1",
-            port=0,
-            prompt="select_account",
-            success_message=(
-                "Autorização concluída. Você pode fechar esta aba e voltar ao "
-                "Sentinel-2 MT."
-            ),
-        )
+        return autorizar_com_pagina_oauth(fluxo)
 
     def autenticar(self, oauth_path: Path, token_path: Path):
         from google.auth.transport.requests import Request

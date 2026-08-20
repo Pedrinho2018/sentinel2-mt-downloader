@@ -33,6 +33,8 @@ A seleção de área usa o OpenStreetMap sem chave de API. Se o mapa estiver sem
 conexão, as quatro coordenadas ainda podem ser preenchidas manualmente.
 
 O token é criado automaticamente no primeiro login e não deve ser versionado.
+Depois do consentimento, o callback local exibe uma página responsiva com o
+estado real da autenticação e orientação para retornar à sincronização.
 
 ### Erro 403 `access_denied` no Google
 
