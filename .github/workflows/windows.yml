@@ -88,15 +88,22 @@ jobs:
         shell: pwsh
         run: |
           $destino = ".\dist\Sentinel2-MT-Windows"
-          Copy-Item ".\dist\sentinel2-mt.exe" "$destino\sentinel2-mt.exe" -Force
+          Copy-Item ".\dist\sentinel2-mt.exe" "$destino\Sentinel2-MT-Core.exe" -Force
           New-Item -ItemType Directory -Path "$destino\config" -Force | Out-Null
           Copy-Item ".\config\config.yaml" "$destino\config\config.yaml" -Force
           Copy-Item ".\config\google-oauth.example.json" "$destino\config\google-oauth.example.json" -Force
           Copy-Item ".\config\config.yaml" "$destino\sentinel2-mt-config.yaml" -Force
           Copy-Item ".\docs\windows.md" "$destino\LEIA-ME-WINDOWS.md" -Force
 
+          foreach ($obrigatorio in @("Sentinel2-MT.exe", "Sentinel2-MT-Core.exe")) {
+            if (-not (Test-Path "$destino\$obrigatorio")) {
+              Write-Error "Arquivo obrigatório ausente: $obrigatorio"
+              exit 4
+            }
+          }
+
           $hashes = @()
-          foreach ($arquivo in @("$destino\Sentinel2-MT.exe", "$destino\sentinel2-mt.exe")) {
+          foreach ($arquivo in @("$destino\Sentinel2-MT.exe", "$destino\Sentinel2-MT-Core.exe")) {
             $hash = Get-FileHash $arquivo -Algorithm SHA256
             $hashes += "$($hash.Hash.ToLower())  $([IO.Path]::GetFileName($arquivo))"
           }
