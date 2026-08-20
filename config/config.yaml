@@ -1,0 +1,27 @@
+stac:
+  url: "https://data.inpe.br/bdc/stac/v1/"
+  colecao: "S2-16D-2"
+
+area:
+  nome: "Mato Grosso"
+  uf: "MT"
+  # Bounding box aproximada em WGS84: [oeste, sul, leste, norte]
+  bbox: [-61.65, -18.05, -50.20, -7.30]
+
+periodo:
+  inicio: "2025-09-01"
+  fim: "2026-04-30"
+
+bandas:
+  - "B02"
+  - "B03"
+  - "B04"
+  - "B08"
+  - "NDVI"
+
+download:
+  pasta: "data/sentinel2"
+  catalogo: "catalogo/catalogo_imagens.csv"
+  timeout_segundos: 120
+  chunk_mb: 1
+  max_itens_teste: 5
