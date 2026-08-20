@@ -34,8 +34,10 @@ Section: science
 Priority: optional
 Architecture: amd64
 Maintainer: Sentinel2 MT Maintainers
-Description: Downloader e sincronizador de imagens Sentinel-2 de Mato Grosso
- Aplicação TUI para catalogar, baixar, processar e sincronizar imagens com Google Drive.
+Depends: libc6, libgl1, libxkbcommon-x11-0, libnss3, libasound2, libdbus-1-3, libfontconfig1, libxcb-cursor0
+Description: Interface gráfica para imagens Sentinel-2 de Mato Grosso
+ Aplicação desktop para catalogar, baixar, processar e sincronizar imagens com Google Drive.
+ Também oferece interfaces TUI e CLI para uso no terminal e em automações.
 EOF
 
 dpkg-deb --root-owner-group --build "$WORK/deb" "$OUT/sentinel2-mt-downloader_${VERSION}_amd64.deb"
