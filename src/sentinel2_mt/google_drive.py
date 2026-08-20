@@ -22,6 +22,12 @@ class AutenticadorGoogleDrive:
     # Evita solicitar o escopo restrito que dá acesso a todo o Drive.
     ESCOPO = ("https://www.googleapis.com/auth/drive.file",)
 
+    @staticmethod
+    def _autorizar_no_navegador(fluxo):
+        # Evita que o Google reutilize silenciosamente uma conta conectada que
+        # não esteja cadastrada como testadora do projeto OAuth.
+        return fluxo.run_local_server(port=0, prompt="select_account")
+
     def autenticar(self, oauth_path: Path, token_path: Path):
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
@@ -37,7 +43,7 @@ class AutenticadorGoogleDrive:
                 if not oauth_path.is_file():
                     raise FileNotFoundError(f"Arquivo OAuth não encontrado: {oauth_path}")
                 fluxo = InstalledAppFlow.from_client_secrets_file(str(oauth_path), self.ESCOPO)
-                credenciais = fluxo.run_local_server(port=0)
+                credenciais = self._autorizar_no_navegador(fluxo)
             token_path.parent.mkdir(parents=True, exist_ok=True)
             token_path.write_text(credenciais.to_json(), encoding="utf-8")
 
