@@ -31,6 +31,20 @@ class TestPackaging(TestCase):
         self.assertIn("Terminal=false", desktop)
         self.assertNotIn("Desktop Action", desktop)
 
+    def test_pacotes_usam_wrapper_de_compatibilidade_grafica(self) -> None:
+        wrapper = (ROOT / "packaging/sentinel2-mt-wrapper.sh").read_text(encoding="utf-8")
+        build = (ROOT / "packaging/build_linux_packages.sh").read_text(encoding="utf-8")
+        rpm = (ROOT / "packaging/rpm/sentinel2-mt.spec").read_text(encoding="utf-8")
+        arch = (ROOT / "packaging/arch/PKGBUILD.in").read_text(encoding="utf-8")
+
+        self.assertIn("LD_PRELOAD", wrapper)
+        self.assertIn("--disable-gpu", wrapper)
+        self.assertIn("usr/lib/sentinel2-mt/sentinel2-mt", build)
+        self.assertIn("%{_prefix}/lib/sentinel2-mt/sentinel2-mt", rpm)
+        self.assertIn("$pkgdir/usr/lib/sentinel2-mt/sentinel2-mt", arch)
+        self.assertIn("sentinel2-mt-wrapper.sh", rpm)
+        self.assertIn("sentinel2-mt-wrapper.sh", arch)
+
     def test_versao_do_workflow_acompanha_codigo(self) -> None:
         workflow = (ROOT / ".github/workflows/packages.yml").read_text(encoding="utf-8")
         self.assertIn(f'default: "{__version__}"', workflow)

@@ -8,6 +8,7 @@ BuildArch:      x86_64
 Source0:        sentinel2-mt
 Source1:        config.yaml
 Source2:        sentinel2-mt.desktop
+Source3:        sentinel2-mt-wrapper.sh
 Requires:       glibc
 Requires:       libglvnd-glx
 Requires:       libxkbcommon-x11
@@ -27,12 +28,14 @@ CLI para uso no terminal e em automações.
 %build
 
 %install
-install -Dm755 %{SOURCE0} %{buildroot}%{_bindir}/sentinel2-mt
+install -Dm755 %{SOURCE0} %{buildroot}%{_prefix}/lib/sentinel2-mt/sentinel2-mt
+install -Dm755 %{SOURCE3} %{buildroot}%{_bindir}/sentinel2-mt
 install -Dm644 %{SOURCE1} %{buildroot}%{_sysconfdir}/sentinel2-mt/config.yaml
 install -Dm644 %{SOURCE2} %{buildroot}%{_datadir}/applications/sentinel2-mt.desktop
 
 %files
 %{_bindir}/sentinel2-mt
+%{_prefix}/lib/sentinel2-mt/sentinel2-mt
 %config(noreplace) %{_sysconfdir}/sentinel2-mt/config.yaml
 %{_datadir}/applications/sentinel2-mt.desktop
 
