@@ -7,6 +7,7 @@ import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from statistics import median
 from urllib.parse import urlparse
 
 import numpy as np
@@ -19,7 +20,9 @@ from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PADRAO = ROOT / "config" / "config.yaml"
-PADRAO_ID = re.compile(r"S2-16D(?:_V\d+)?_(?P<tile>\d{6})_(?P<data>\d{8})")
+PADRAO_L2A = re.compile(
+    r"S2[ABC]_MSIL2A_(?P<data>\d{8})T\d+_N\d+_R\d+_T(?P<tile>\d{5})_"
+)
 
 
 def carregar_config(caminho: Path) -> dict:
@@ -43,19 +46,30 @@ def extensao(url: str) -> str:
 
 
 def interpretar_item(item) -> tuple[str, datetime] | None:
-    match = PADRAO_ID.search(item.id)
+    match = PADRAO_L2A.search(item.id)
     if match:
         return match.group("tile"), datetime.strptime(match.group("data"), "%Y%m%d")
 
-    if item.datetime:
-        tile = str(
-            item.properties.get("bdc:tile")
-            or item.properties.get("tile")
-            or ""
-        ).strip()
-        if tile:
-            return tile, item.datetime.replace(tzinfo=None)
+    tile = str(
+        item.properties.get("s2:mgrs_tile")
+        or item.properties.get("bdc:tile")
+        or item.properties.get("tile")
+        or ""
+    ).strip().removeprefix("T")
+    if tile and item.datetime:
+        return tile, item.datetime.replace(tzinfo=None)
     return None
+
+
+def eo_cloud(item) -> float:
+    for chave in ("eo:cloud_cover", "cloud_cover"):
+        valor = item.properties.get(chave)
+        if valor is not None:
+            try:
+                return float(valor)
+            except (TypeError, ValueError):
+                pass
+    return 100.0
 
 
 def baixar(
@@ -96,7 +110,7 @@ def baixar(
         raise
 
 
-def percentual_nuvem_scl(caminho: Path, amostra_px: int = 1600) -> float:
+def percentual_nuvem_scl(caminho: Path, amostra_px: int = 1800) -> float:
     classes_ruins = np.array([3, 7, 8, 9, 10, 11], dtype=np.uint8)
     with rasterio.open(caminho) as src:
         escala = min(1.0, amostra_px / max(src.width, src.height))
@@ -116,6 +130,27 @@ def percentual_nuvem_scl(caminho: Path, amostra_px: int = 1600) -> float:
     return float(ruins.sum() * 100.0 / total)
 
 
+def baixar_bandas(
+    entrada: dict,
+    bandas: list[str],
+    sessao: requests.Session,
+    timeout: int,
+    chunk_mb: int,
+) -> tuple[bool, str]:
+    item = entrada["item"]
+    pasta: Path = entrada["scene_dir"]
+    for banda in bandas:
+        asset = localizar_asset(item, banda)
+        if asset is None:
+            return False, f"asset {banda} ausente"
+        destino = pasta / f"{banda}{extensao(asset.href)}"
+        try:
+            baixar(sessao, asset.href, destino, timeout, chunk_mb)
+        except Exception as exc:
+            return False, f"{banda}: {exc}"
+    return True, ""
+
+
 def salvar_csv(caminho: Path, registros: list[dict]) -> None:
     caminho.parent.mkdir(parents=True, exist_ok=True)
     campos = [
@@ -123,7 +158,8 @@ def salvar_csv(caminho: Path, registros: list[dict]) -> None:
         "mes",
         "item_id",
         "data",
-        "nuvem_pct",
+        "eo_cloud_pct",
+        "scl_cloud_shadow_pct",
         "status",
         "selecionada",
         "scene_dir",
@@ -136,274 +172,222 @@ def salvar_csv(caminho: Path, registros: list[dict]) -> None:
         writer.writerows(registros)
 
 
-def baixar_bandas_cena(
-    entrada: dict,
-    bandas: list[str],
-    sessao: requests.Session,
-    timeout: int,
-    chunk_mb: int,
-) -> tuple[bool, str]:
-    item = entrada["item"]
-    scene_dir: Path = entrada["scene_dir"]
+def escolher_tiles(
+    grupos: dict[tuple[str, str], list[tuple[object, datetime]]],
+    max_tiles: int,
+    tile_forcado: str,
+) -> list[str]:
+    tiles = sorted({tile for tile, _ in grupos})
+    if tile_forcado:
+        return [tile_forcado] if tile_forcado in tiles else []
+    if max_tiles == 0:
+        return tiles
 
-    for banda in bandas:
-        asset = localizar_asset(item, banda)
-        if asset is None:
-            return False, f"asset {banda} ausente"
-        destino = scene_dir / f"{banda}{extensao(asset.href)}"
-        try:
-            baixar(sessao, asset.href, destino, timeout, chunk_mb)
-        except Exception as exc:
-            return False, f"{banda}: {exc}"
-    return True, ""
+    ranking = []
+    for tile in tiles:
+        grupos_tile = [v for (t, _), v in grupos.items() if t == tile]
+        meses = len(grupos_tile)
+        itens = [item for grupo in grupos_tile for item, _ in grupo]
+        clouds = [eo_cloud(item) for item in itens]
+        mediana_cloud = median(clouds) if clouds else 100.0
+        ranking.append((meses, len(itens), -mediana_cloud, tile))
+
+    ranking.sort(reverse=True)
+    return [r[3] for r in ranking[:max_tiles]]
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Monta séries temporais Sentinel-2 por tile e mês para composição sem nuvens."
+        description="Baixa cenas Sentinel-2 L2A reais por MGRS tile/mês para composição temporal."
     )
     parser.add_argument("--config", type=Path, default=CONFIG_PADRAO)
     parser.add_argument("--inicio", help="YYYY-MM-DD")
     parser.add_argument("--fim", help="YYYY-MM-DD")
-    parser.add_argument("--tile", help="Processa apenas um tile, ex.: 014018")
-    parser.add_argument(
-        "--max-tiles",
-        type=int,
-        help="Quantidade máxima de tiles. 0 = todos. Sobrescreve config.",
-    )
-    parser.add_argument(
-        "--cenas-por-mes",
-        type=int,
-        help="Máximo de cenas selecionadas por tile/mês.",
-    )
+    parser.add_argument("--tile", help="MGRS tile específico, ex.: 21LWG")
+    parser.add_argument("--max-tiles", type=int, help="0 = todos")
+    parser.add_argument("--cenas-por-mes", type=int)
     args = parser.parse_args()
 
     cfg = carregar_config(args.config)
-    stac_cfg = cfg["stac"]
-    serie_cfg = cfg["serie_temporal"]
+    serie = cfg["serie_temporal"]
     download_cfg = cfg["download"]
 
-    inicio = args.inicio or cfg["periodo"]["inicio"]
-    fim = args.fim or cfg["periodo"]["fim"]
+    inicio_txt = args.inicio or cfg["periodo"]["inicio"]
+    fim_txt = args.fim or cfg["periodo"]["fim"]
+    inicio = datetime.strptime(inicio_txt, "%Y-%m-%d")
+    fim = datetime.strptime(fim_txt, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+
+    max_tiles = int(serie.get("max_tiles_teste", 1)) if args.max_tiles is None else args.max_tiles
+    cenas_por_mes = int(serie.get("cenas_por_tile_mes", 6)) if args.cenas_por_mes is None else args.cenas_por_mes
+    candidatos_por_mes = int(serie.get("candidatos_por_tile_mes", 10))
+    nuvem_max = float(serie.get("nuvem_max_cena_pct", 70))
     bandas = list(cfg["bandas"])
-    max_tiles = (
-        int(serie_cfg.get("max_tiles_teste", 1))
-        if args.max_tiles is None
-        else args.max_tiles
-    )
-    cenas_por_mes = (
-        int(serie_cfg.get("cenas_por_tile_mes", 2))
-        if args.cenas_por_mes is None
-        else args.cenas_por_mes
-    )
-    nuvem_max = float(serie_cfg.get("nuvem_max_cena_pct", 60))
-    tile_teste = str(serie_cfg.get("tile_teste", "")).strip()
+    timeout = int(download_cfg.get("timeout_segundos", 240))
+    chunk_mb = int(download_cfg.get("chunk_mb", 4))
     pasta_base = ROOT / download_cfg["pasta"]
-    catalogo = ROOT / serie_cfg["catalogo"]
-    resumo_path = ROOT / serie_cfg["resumo"]
-    timeout = int(download_cfg.get("timeout_segundos", 180))
-    chunk_mb = int(download_cfg.get("chunk_mb", 2))
+    catalogo = ROOT / serie["catalogo"]
+    resumo_path = ROOT / serie["resumo"]
 
-    print("=" * 76)
-    print(" SÉRIE TEMPORAL SENTINEL-2 | tile x mês")
-    print("=" * 76)
-    print(f"Período: {inicio} até {fim}")
-    print(f"Cenas por tile/mês: {cenas_por_mes}")
-    print(f"Nuvem máxima da cena-fonte: {nuvem_max:.1f}%")
-    print("Observação: a cena-fonte pode ter nuvem; o mosaico usa apenas pixels limpos.\n")
+    usar_bbox_teste = bool(serie.get("usar_bbox_teste", False)) and max_tiles != 0 and not args.tile
+    bbox = cfg["area"].get("teste_bbox") if usar_bbox_teste else cfg["area"]["bbox"]
 
-    cliente = Client.open(stac_cfg["url"])
+    print("=" * 78)
+    print(" SENTINEL-2 L2A REAL | série temporal por MGRS tile/mês")
+    print("=" * 78)
+    print(f"Coleção: {cfg['stac']['colecao']}")
+    print(f"Período: {inicio_txt} até {fim_txt}")
+    print(f"Busca: {'BBOX DE TESTE' if usar_bbox_teste else 'MATO GROSSO'}")
+    print(f"Candidatos avaliados/mês: {candidatos_por_mes}")
+    print(f"Fontes guardadas/mês: até {cenas_por_mes}")
+    print(f"Nuvem/sombra máxima por fonte: {nuvem_max:.1f}%\n")
+
+    cliente = Client.open(cfg["stac"]["url"])
     busca = cliente.search(
-        collections=[stac_cfg["colecao"]],
-        bbox=cfg["area"]["bbox"],
-        datetime=f"{inicio}/{fim}",
+        collections=[cfg["stac"]["colecao"]],
+        bbox=bbox,
+        datetime=f"{inicio_txt}/{fim_txt}",
     )
 
     grupos_todos: dict[tuple[str, str], list[tuple[object, datetime]]] = defaultdict(list)
-    itens_lidos = 0
-    ignorados_id = 0
+    itens_lidos = fora_periodo = sem_tile = 0
 
-    print("[1/3] Lendo catálogo STAC e organizando por tile/mês...")
+    print("[1/3] Lendo STAC e separando cenas reais por tile/mês...")
     for item in busca.items():
         itens_lidos += 1
         info = interpretar_item(item)
         if info is None:
-            ignorados_id += 1
+            sem_tile += 1
             continue
         tile_id, data = info
-        mes = data.strftime("%Y-%m")
-        grupos_todos[(tile_id, mes)].append((item, data))
+        if data < inicio or data > fim:
+            fora_periodo += 1
+            continue
+        grupos_todos[(tile_id, data.strftime("%Y-%m"))].append((item, data))
 
-    tiles_disponiveis = sorted({tile for tile, _ in grupos_todos})
-    if args.tile:
-        tiles = [args.tile] if args.tile in tiles_disponiveis else []
-    elif max_tiles == 1 and tile_teste and tile_teste in tiles_disponiveis:
-        tiles = [tile_teste]
-    elif max_tiles > 0:
-        tiles = tiles_disponiveis[:max_tiles]
-    else:
-        tiles = tiles_disponiveis
-
-    tiles_set = set(tiles)
-    grupos = {
-        chave: valor
-        for chave, valor in grupos_todos.items()
-        if chave[0] in tiles_set
-    }
-
-    if not grupos:
-        print("[ERRO] Nenhum grupo tile/mês encontrado para os filtros.")
+    tile_forcado = (args.tile or str(serie.get("tile_teste", ""))).strip().removeprefix("T")
+    tiles = escolher_tiles(grupos_todos, max_tiles, tile_forcado)
+    if not tiles:
+        print("[ERRO] Nenhum MGRS tile encontrado para o recorte/período.")
         return 2
 
-    print(f"Tiles selecionados: {', '.join(tiles)}")
-    print(f"Grupos tile/mês: {len(grupos)}")
+    tiles_set = set(tiles)
+    grupos = {chave: valor for chave, valor in grupos_todos.items() if chave[0] in tiles_set}
+    print(f"Tiles escolhidos: {', '.join(tiles)}")
+    print(f"Grupos tile/mês: {len(grupos)}\n")
 
     sessao = requests.Session()
-    sessao.headers.update({"User-Agent": "sentinel2-mt-downloader/temporal-series-1.1"})
+    sessao.headers.update({"User-Agent": "sentinel2-mt-downloader/l2a-temporal-2.0"})
     registros: list[dict] = []
-    selecionadas_total = 0
-    grupos_com_fontes = 0
-    avisos = 0
+    selecionadas_total = avisos = 0
 
-    print("\n[2/3] Avaliando SCL e escolhendo fontes complementares...")
-
+    print("[2/3] Avaliando SCL real e baixando as melhores fontes...")
     for (tile_id, mes), candidatos in sorted(grupos.items()):
-        print(f"\n[TILE {tile_id} | {mes}] candidatos: {len(candidatos)}")
+        preordenados = sorted(
+            candidatos,
+            key=lambda x: (eo_cloud(x[0]), abs(x[1].day - 15), x[1]),
+        )[:candidatos_por_mes]
+
+        print(f"\n[TILE {tile_id} | {mes}] STAC={len(candidatos)} | avaliando={len(preordenados)}")
         avaliados: list[dict] = []
 
-        for item, data in sorted(candidatos, key=lambda x: x[1]):
+        for item, data in preordenados:
+            scene_dir = pasta_base / tile_id / data.strftime("%Y-%m-%d") / item.id
             scl_asset = localizar_asset(item, "SCL")
-            scene_dir = pasta_base / data.strftime("%Y-%m-%d") / item.id
+            eo_pct = eo_cloud(item)
             scl_path = scene_dir / "qualidade" / "SCL.tif"
 
             if scl_asset is None:
-                avaliados.append(
-                    {
-                        "item": item,
-                        "data": data,
-                        "nuvem": 100.0,
-                        "status": "sem_scl",
-                        "scene_dir": scene_dir,
-                        "scl_path": scl_path,
-                        "erro": "asset SCL ausente",
-                    }
-                )
+                avaliados.append({
+                    "item": item, "data": data, "eo": eo_pct, "scl": 100.0,
+                    "status": "sem_scl", "scene_dir": scene_dir, "scl_path": scl_path,
+                    "erro": "asset SCL ausente"
+                })
                 avisos += 1
                 continue
 
             scl_path = scene_dir / "qualidade" / f"SCL{extensao(scl_asset.href)}"
             try:
                 baixar(sessao, scl_asset.href, scl_path, timeout, chunk_mb)
-                nuvem = percentual_nuvem_scl(scl_path)
-                status = "candidata" if nuvem <= nuvem_max else "rejeitada_nuvem"
+                scl_pct = percentual_nuvem_scl(scl_path)
+                status = "candidata" if scl_pct <= nuvem_max else "rejeitada_nuvem"
                 erro = ""
-                print(f"  {data.date()} | {item.id} | nuvem/sombra={nuvem:.2f}% | {status}")
+                print(f"  {data.date()} | eo={eo_pct:5.1f}% | SCL={scl_pct:5.1f}% | {status}")
             except Exception as exc:
-                nuvem = 100.0
+                scl_pct = 100.0
                 status = "erro_scl"
                 erro = str(exc)
                 avisos += 1
                 print(f"  [AVISO] {item.id}: {exc}")
 
-            avaliados.append(
-                {
-                    "item": item,
-                    "data": data,
-                    "nuvem": nuvem,
-                    "status": status,
-                    "scene_dir": scene_dir,
-                    "scl_path": scl_path,
-                    "erro": erro,
-                }
-            )
+            avaliados.append({
+                "item": item, "data": data, "eo": eo_pct, "scl": scl_pct,
+                "status": status, "scene_dir": scene_dir, "scl_path": scl_path,
+                "erro": erro
+            })
 
         elegiveis = [a for a in avaliados if a["status"] == "candidata"]
-        elegiveis.sort(
-            key=lambda a: (
-                a["nuvem"],
-                abs(a["data"].day - 15),
-                a["data"],
-            )
-        )
+        elegiveis.sort(key=lambda a: (a["scl"], abs(a["data"].day - 15), a["data"]))
 
-        selecionados_ids: set[str] = set()
+        selecionados: set[str] = set()
         for entrada in elegiveis:
-            if len(selecionados_ids) >= max(1, cenas_por_mes):
+            if len(selecionados) >= cenas_por_mes:
                 break
-            item = entrada["item"]
-            print(f"  -> tentando selecionar: {item.id}")
-            ok, erro = baixar_bandas_cena(
-                entrada,
-                bandas,
-                sessao,
-                timeout,
-                chunk_mb,
-            )
+            print(f"  -> baixando fonte {len(selecionados)+1}/{cenas_por_mes}: {entrada['item'].id}")
+            ok, erro = baixar_bandas(entrada, bandas, sessao, timeout, chunk_mb)
             if ok:
-                selecionados_ids.add(item.id)
                 entrada["status"] = "selecionada"
                 entrada["erro"] = ""
+                selecionados.add(entrada["item"].id)
                 selecionadas_total += 1
-                print("     [OK] bandas científicas disponíveis")
             else:
                 entrada["status"] = "erro_bandas"
                 entrada["erro"] = erro
                 avisos += 1
-                print(f"     [AVISO] {erro}; tentando próxima candidata")
-
-        if selecionados_ids:
-            grupos_com_fontes += 1
+                print(f"     [AVISO] {erro}")
 
         for entrada in avaliados:
-            item = entrada["item"]
-            selecionada = item.id in selecionados_ids
+            selecionada = entrada["item"].id in selecionados
             status = entrada["status"]
             if status == "candidata" and not selecionada:
-                status = "fora_limite_mensal"
+                status = "nao_selecionada"
+            registros.append({
+                "tile_id": tile_id,
+                "mes": mes,
+                "item_id": entrada["item"].id,
+                "data": entrada["data"].strftime("%Y-%m-%d"),
+                "eo_cloud_pct": f"{entrada['eo']:.3f}",
+                "scl_cloud_shadow_pct": f"{entrada['scl']:.3f}",
+                "status": status,
+                "selecionada": "1" if selecionada else "0",
+                "scene_dir": str(entrada["scene_dir"].relative_to(ROOT)),
+                "scl": str(entrada["scl_path"].relative_to(ROOT)),
+                "erro": entrada["erro"],
+            })
 
-            registros.append(
-                {
-                    "tile_id": tile_id,
-                    "mes": mes,
-                    "item_id": item.id,
-                    "data": entrada["data"].strftime("%Y-%m-%d"),
-                    "nuvem_pct": f"{entrada['nuvem']:.3f}",
-                    "status": status,
-                    "selecionada": "1" if selecionada else "0",
-                    "scene_dir": str(entrada["scene_dir"].relative_to(ROOT)),
-                    "scl": str(entrada["scl_path"].relative_to(ROOT)),
-                    "erro": entrada["erro"],
-                }
-            )
-
-    print("\n[3/3] Salvando catálogo da série temporal...")
+    print("\n[3/3] Salvando catálogo da série L2A...")
     salvar_csv(catalogo, registros)
-
     resumo = {
         "gerado_em_utc": datetime.now(timezone.utc).isoformat(),
-        "periodo_inicio": inicio,
-        "periodo_fim": fim,
+        "colecao": cfg["stac"]["colecao"],
+        "periodo_inicio": inicio_txt,
+        "periodo_fim": fim_txt,
+        "bbox_usado": bbox,
         "tiles": tiles,
         "itens_stac_lidos": itens_lidos,
-        "itens_sem_tile_data": ignorados_id,
+        "itens_fora_periodo_descartados": fora_periodo,
+        "itens_sem_tile": sem_tile,
         "grupos_tile_mes": len(grupos),
-        "grupos_com_ao_menos_uma_fonte": grupos_com_fontes,
         "cenas_selecionadas": selecionadas_total,
         "cenas_por_tile_mes": cenas_por_mes,
-        "nuvem_max_cena_pct": nuvem_max,
         "avisos": avisos,
         "catalogo": str(catalogo.relative_to(ROOT)),
     }
     resumo_path.parent.mkdir(parents=True, exist_ok=True)
-    resumo_path.write_text(
-        json.dumps(resumo, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-    print("\n=== RESUMO ===")
+    resumo_path.write_text(json.dumps(resumo, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(resumo, ensure_ascii=False, indent=2))
+
     if selecionadas_total == 0:
-        print("[ERRO] Nenhuma cena-fonte foi selecionada.")
+        print("[ERRO] Nenhuma cena L2A foi selecionada.")
         return 1
     return 0
 
