@@ -19,6 +19,13 @@ bandas:
   - "B08"
   - "NDVI"
 
+preview:
+  gerar_rgb: true
+  tamanho_max_px: 1600
+  percentil_min: 2
+  percentil_max: 98
+  qualidade_jpeg: 92
+
 download:
   pasta: "data/sentinel2"
   catalogo: "catalogo/catalogo_imagens.csv"
