@@ -11,7 +11,7 @@ from sentinel2_mt.gui_support import montar_argumentos_operacao
 
 EMPACOTADO = bool(getattr(sys, "frozen", False))
 ROOT = Path(sys.executable).resolve().parent if EMPACOTADO else Path(__file__).resolve().parents[1]
-BACKEND_EXE = ROOT / "sentinel2-mt.exe"
+BACKEND_EXE = ROOT / "Sentinel2-MT-Core.exe"
 
 # A GUI original foi escrita para execução pelo código-fonte. No pacote Windows,
 # os arquivos graváveis e a configuração ficam ao lado do executável portátil.
