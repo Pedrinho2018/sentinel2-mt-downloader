@@ -34,6 +34,23 @@ conexão, as quatro coordenadas ainda podem ser preenchidas manualmente.
 
 O token é criado automaticamente no primeiro login e não deve ser versionado.
 
+### Erro 403 `access_denied` no Google
+
+O JSON OAuth identifica um projeto do Google Cloud. Quando esse projeto está com
+o status **Testing**, o Google permite o login apenas das contas cadastradas em
+**Google Auth Platform → Audience → Test users**. O proprietário do projeto deve
+adicionar ali o mesmo e-mail escolhido no navegador. Não é necessário gerar
+outro JSON depois dessa liberação.
+
+Essa restrição é aplicada pelo Google antes de o programa receber o token e não
+pode ser removida pelo código local. Para distribuição pública, o proprietário
+deve publicar/verificar o aplicativo. Consulte a
+[documentação oficial sobre audiência e usuários de teste](https://support.google.com/cloud/answer/15549945).
+
+O projeto solicita apenas `https://www.googleapis.com/auth/drive.file`. Se a URL
+de autorização ainda mostrar `https://www.googleapis.com/auth/drive`, feche a
+instância antiga da GUI e abra novamente com `python iniciar_gui.py`.
+
 ## Legibilidade e validação
 
 A interface usa a paleta Qt Fusion para não herdar combinações ilegíveis do

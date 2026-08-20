@@ -59,9 +59,18 @@ def configurar_aplicacao(app: QtWidgets.QApplication) -> None:
     paleta.setColor(papel.Link, QtGui.QColor(CORES["destaque"]))
     paleta.setColor(papel.PlaceholderText, QtGui.QColor(CORES["texto_suave"]))
     desabilitado = QtGui.QPalette.ColorGroup.Disabled
+    paleta.setColor(
+        desabilitado, papel.WindowText, QtGui.QColor(CORES["desabilitado_texto"])
+    )
     paleta.setColor(desabilitado, papel.Text, QtGui.QColor(CORES["desabilitado_texto"]))
     paleta.setColor(
         desabilitado, papel.ButtonText, QtGui.QColor(CORES["desabilitado_texto"])
+    )
+    paleta.setColor(
+        desabilitado, papel.Base, QtGui.QColor(CORES["desabilitado_fundo"])
+    )
+    paleta.setColor(
+        desabilitado, papel.Button, QtGui.QColor(CORES["desabilitado_fundo"])
     )
     app.setPalette(paleta)
     app.setProperty("sentinel2TemaAplicado", True)
@@ -505,7 +514,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         nota = QtWidgets.QLabel(
             "Privacidade: a aplicação solicita o escopo drive.file, limitado aos arquivos "
-            "criados ou abertos pelo próprio aplicativo. Credenciais não são salvas nos perfis de região."
+            "criados ou abertos pelo próprio aplicativo. Se o projeto OAuth estiver em modo "
+            "de teste, a conta Google usada no login precisa estar cadastrada como usuário de "
+            "teste pelo proprietário do JSON. Credenciais não são salvas nos perfis de região."
         )
         nota.setWordWrap(True)
         nota.setObjectName("pageSubtitle")
@@ -586,6 +597,11 @@ class MainWindow(QtWidgets.QMainWindow):
         }
         self.resumo_operacao.setText(mensagens[str(operacao)])
         self.max_execucao.setEnabled(operacao != "sincronizar")
+        self.max_execucao.setToolTip(
+            "Não se aplica à sincronização."
+            if operacao == "sincronizar"
+            else "Limite de cenas desta operação; zero processa todas."
+        )
 
     def _coletar_dados(self) -> dict[str, Any]:
         bbox = normalizar_bbox(
@@ -695,6 +711,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_executar.setEnabled(not executando)
         self.btn_salvar.setEnabled(not executando)
         self.btn_cancelar.setEnabled(executando)
+        # A operação em andamento já recebeu uma cópia dos argumentos. Manter estes
+        # controles ativos evita perda de contraste e permite preparar a próxima fila.
+        self.operacao.setEnabled(True)
+        self._atualizar_operacao()
         self.progresso.setRange(0, 0 if executando else 1)
         if not executando:
             self.progresso.setValue(0)

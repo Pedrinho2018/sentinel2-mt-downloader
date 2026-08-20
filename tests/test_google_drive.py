@@ -137,6 +137,8 @@ class TestLotesGoogleDrive(TestCase):
             self.assertEqual(len(autenticador.chamadas), 1)
             self.assertTrue(any("3 arquivo(s) em 2 lote(s)" in linha for linha in saida))
             self.assertTrue(any("[LOTE 2/2]" in linha for linha in saida))
+            self.assertTrue(any("drive.file" in linha for linha in saida))
+            self.assertTrue(any("Test users" in linha for linha in saida))
 
     def test_atualiza_arquivo_que_ja_existe_no_drive(self) -> None:
         with TemporaryDirectory() as temporario:

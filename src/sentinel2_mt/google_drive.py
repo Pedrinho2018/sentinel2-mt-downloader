@@ -78,6 +78,10 @@ class SincronizadorGoogleDrive:
             self.saida("[OAUTH] Reutilizando autorização salva.")
         else:
             self.saida(f"[OAUTH] Credencial: {oauth.name}")
+            self.saida("[OAUTH] Escopo mínimo solicitado: drive.file.")
+            self.saida(
+                "[OAUTH] Projeto em teste: faça login com uma conta cadastrada em Test users."
+            )
             self.saida("[OAUTH] Aguardando autorização no navegador...")
         service = self.autenticador.autenticar(oauth, token)
         self.saida("[OAUTH] Autenticação concluída.")

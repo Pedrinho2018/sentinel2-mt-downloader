@@ -22,3 +22,5 @@ class TestTemaGui(TestCase):
         self.assertIn("QCalendarWidget QAbstractItemView", estilo)
         self.assertIn("QHeaderView::section", estilo)
         self.assertIn("QToolTip", estilo)
+        self.assertIn("QComboBox:disabled::drop-down", estilo)
+        self.assertIn("QSpinBox:disabled::up-button", estilo)
