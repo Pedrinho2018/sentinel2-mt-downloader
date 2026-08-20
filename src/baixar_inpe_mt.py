@@ -15,421 +15,293 @@ from pystac_client import Client
 from rasterio.enums import Resampling
 from tqdm import tqdm
 
-
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PADRAO = ROOT / "config" / "config.yaml"
 
 
 def carregar_config(caminho: Path) -> dict:
-    if not caminho.exists():
-        raise FileNotFoundError(f"Arquivo de configuração não encontrado: {caminho}")
-
-    with caminho.open("r", encoding="utf-8") as arquivo:
-        return yaml.safe_load(arquivo)
+    with caminho.open("r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
 
 
 def data_item(item) -> str:
     if item.datetime:
         return item.datetime.strftime("%Y-%m-%d")
-
-    inicio = item.properties.get("start_datetime")
+    inicio = item.properties.get("start_datetime", "")
     if inicio:
         try:
             return datetime.fromisoformat(inicio.replace("Z", "+00:00")).strftime("%Y-%m-%d")
         except ValueError:
             return inicio[:10]
-
     return "sem_data"
 
 
-def extensao_da_url(url: str) -> str:
-    sufixo = Path(urlparse(url).path).suffix
-    return sufixo if sufixo else ".tif"
-
-
-def localizar_asset(item, banda: str):
-    if banda in item.assets:
-        return item.assets[banda]
-
-    banda_normalizada = banda.casefold()
+def localizar_asset(item, nome: str):
+    if nome in item.assets:
+        return item.assets[nome]
+    alvo = nome.casefold()
     for chave, asset in item.assets.items():
-        if chave.casefold() == banda_normalizada:
+        if chave.casefold() == alvo:
             return asset
-
     return None
 
 
-def baixar_arquivo(
-    sessao: requests.Session,
-    url: str,
-    destino: Path,
-    timeout: int,
-    chunk_mb: int,
-) -> str:
-    destino.parent.mkdir(parents=True, exist_ok=True)
+def extensao(url: str) -> str:
+    ext = Path(urlparse(url).path).suffix
+    return ext or ".tif"
 
+
+def baixar(sessao: requests.Session, url: str, destino: Path, timeout: int, chunk_mb: int) -> str:
+    destino.parent.mkdir(parents=True, exist_ok=True)
     if destino.exists() and destino.stat().st_size > 0:
         return "ja_existia"
 
     parcial = destino.with_suffix(destino.suffix + ".part")
-    if parcial.exists():
-        parcial.unlink()
+    parcial.unlink(missing_ok=True)
+    bloco = max(1, chunk_mb) * 1024 * 1024
 
     try:
         with sessao.get(url, stream=True, timeout=(20, timeout)) as resposta:
             resposta.raise_for_status()
             tamanho = int(resposta.headers.get("content-length", 0))
-            bloco = max(1, chunk_mb) * 1024 * 1024
-
-            with parcial.open("wb") as arquivo, tqdm(
-                total=tamanho if tamanho > 0 else None,
+            with parcial.open("wb") as f, tqdm(
+                total=tamanho or None,
                 unit="B",
                 unit_scale=True,
                 unit_divisor=1024,
                 desc=destino.name,
                 leave=False,
             ) as barra:
-                for pedaco in resposta.iter_content(chunk_size=bloco):
-                    if not pedaco:
-                        continue
-                    arquivo.write(pedaco)
-                    barra.update(len(pedaco))
-
+                for parte in resposta.iter_content(chunk_size=bloco):
+                    if parte:
+                        f.write(parte)
+                        barra.update(len(parte))
         parcial.replace(destino)
         return "baixado"
-
     except Exception:
-        if parcial.exists():
-            parcial.unlink()
+        parcial.unlink(missing_ok=True)
         raise
 
 
-def ler_banda_para_preview(caminho: Path, tamanho_max_px: int) -> tuple[np.ndarray, np.ndarray]:
+def percentual_nuvem_scl(caminho: Path, amostra_px: int = 1400) -> float:
+    # SCL: 3 sombra; 7 suspeito/não classificado; 8/9 nuvem; 10 cirrus; 11 neve/gelo.
+    classes_ruins = np.array([3, 7, 8, 9, 10, 11], dtype=np.uint8)
     with rasterio.open(caminho) as src:
-        maior_dimensao = max(src.width, src.height)
-        escala = min(1.0, tamanho_max_px / maior_dimensao)
-        largura = max(1, int(src.width * escala))
-        altura = max(1, int(src.height * escala))
+        escala = min(1.0, amostra_px / max(src.width, src.height))
+        w = max(1, int(src.width * escala))
+        h = max(1, int(src.height * escala))
+        scl = src.read(1, out_shape=(h, w), resampling=Resampling.nearest)
 
-        dados = src.read(
-            1,
-            out_shape=(altura, largura),
-            resampling=Resampling.bilinear,
-        ).astype(np.float32)
+    validos = (scl != 0) & (scl != 1)
+    total = int(validos.sum())
+    if total == 0:
+        return 100.0
+    ruins = validos & np.isin(scl, classes_ruins)
+    return float(ruins.sum() * 100.0 / total)
 
+
+def ler_preview(caminho: Path, max_px: int) -> tuple[np.ndarray, np.ndarray]:
+    with rasterio.open(caminho) as src:
+        escala = min(1.0, max_px / max(src.width, src.height))
+        w = max(1, int(src.width * escala))
+        h = max(1, int(src.height * escala))
+        dados = src.read(1, out_shape=(h, w), resampling=Resampling.bilinear).astype(np.float32)
         mascara = np.isfinite(dados)
-        if src.nodata is not None:
-            mascara &= dados != src.nodata
-        else:
-            mascara &= dados != 0
-
+        mascara &= dados != (src.nodata if src.nodata is not None else 0)
     return dados, mascara
 
 
-def esticar_banda(
-    dados: np.ndarray,
-    mascara: np.ndarray,
-    percentil_min: float,
-    percentil_max: float,
-) -> np.ndarray:
+def stretch(dados: np.ndarray, mascara: np.ndarray, pmin: float, pmax: float) -> np.ndarray:
     saida = np.zeros(dados.shape, dtype=np.uint8)
-
-    validos = dados[mascara]
-    if validos.size == 0:
+    valores = dados[mascara]
+    if valores.size == 0:
         return saida
-
-    minimo, maximo = np.percentile(validos, [percentil_min, percentil_max])
-
-    if not np.isfinite(minimo) or not np.isfinite(maximo) or maximo <= minimo:
-        minimo = float(validos.min())
-        maximo = float(validos.max())
-
+    minimo, maximo = np.percentile(valores, [pmin, pmax])
     if maximo <= minimo:
         return saida
-
-    normalizado = (dados - minimo) / (maximo - minimo)
-    normalizado = np.clip(normalizado, 0, 1)
-    saida = (normalizado * 255).astype(np.uint8)
+    norm = np.clip((dados - minimo) / (maximo - minimo), 0, 1)
+    saida = (norm * 255).astype(np.uint8)
     saida[~mascara] = 0
     return saida
 
 
-def gerar_preview_rgb(
-    arquivos_item: dict[str, Path],
-    destino: Path,
-    tamanho_max_px: int,
-    percentil_min: float,
-    percentil_max: float,
-    qualidade_jpeg: int,
-) -> str:
-    necessarias = ["B04", "B03", "B02"]
-    faltando = [banda for banda in necessarias if banda not in arquivos_item or not arquivos_item[banda].exists()]
+def gerar_rgb(arquivos: dict[str, Path], destino: Path, cfg: dict) -> str:
+    if any(b not in arquivos or not arquivos[b].exists() for b in ("B04", "B03", "B02")):
+        return "bandas_rgb_incompletas"
 
-    if faltando:
-        return f"faltando_{'_'.join(faltando)}"
+    max_px = int(cfg.get("tamanho_max_px", 1600))
+    pmin = float(cfg.get("percentil_min", 2))
+    pmax = float(cfg.get("percentil_max", 98))
+    qualidade = int(cfg.get("qualidade_jpeg", 92))
 
-    vermelho, mask_r = ler_banda_para_preview(arquivos_item["B04"], tamanho_max_px)
-    verde, mask_g = ler_banda_para_preview(arquivos_item["B03"], tamanho_max_px)
-    azul, mask_b = ler_banda_para_preview(arquivos_item["B02"], tamanho_max_px)
-
-    if vermelho.shape != verde.shape or vermelho.shape != azul.shape:
+    r0, mr = ler_preview(arquivos["B04"], max_px)
+    g0, mg = ler_preview(arquivos["B03"], max_px)
+    b0, mb = ler_preview(arquivos["B02"], max_px)
+    if r0.shape != g0.shape or r0.shape != b0.shape:
         return "dimensoes_incompativeis"
 
-    mascara = mask_r & mask_g & mask_b
-
-    r = esticar_banda(vermelho, mascara, percentil_min, percentil_max)
-    g = esticar_banda(verde, mascara, percentil_min, percentil_max)
-    b = esticar_banda(azul, mascara, percentil_min, percentil_max)
-
-    rgb = np.dstack((r, g, b))
+    m = mr & mg & mb
+    rgb = np.dstack((stretch(r0, m, pmin, pmax), stretch(g0, m, pmin, pmax), stretch(b0, m, pmin, pmax)))
     destino.parent.mkdir(parents=True, exist_ok=True)
-
-    Image.fromarray(rgb, mode="RGB").save(
-        destino,
-        format="JPEG",
-        quality=max(1, min(100, qualidade_jpeg)),
-        optimize=True,
-    )
-
+    Image.fromarray(rgb, mode="RGB").save(destino, "JPEG", quality=max(1, min(100, qualidade)), optimize=True)
     return "gerado"
 
 
-def salvar_catalogo(caminho: Path, registros: list[dict]) -> None:
+def reg(item, data: str, colecao: str, banda: str, nuvem, status: str, url: str = "", arquivo: str = "", erro: str = "") -> dict:
+    return {
+        "id": item.id,
+        "data": data,
+        "colecao": colecao,
+        "banda": banda,
+        "nuvem_pct": f"{nuvem:.2f}" if isinstance(nuvem, float) else nuvem,
+        "url": url,
+        "arquivo": arquivo,
+        "status": status,
+        "erro": erro,
+    }
+
+
+def salvar_csv(caminho: Path, registros: list[dict]) -> None:
     caminho.parent.mkdir(parents=True, exist_ok=True)
-
-    campos = [
-        "id",
-        "data",
-        "colecao",
-        "banda",
-        "url",
-        "arquivo",
-        "status",
-        "erro",
-    ]
-
-    with caminho.open("w", newline="", encoding="utf-8-sig") as arquivo:
-        writer = csv.DictWriter(arquivo, fieldnames=campos)
-        writer.writeheader()
-        writer.writerows(registros)
+    campos = ["id", "data", "colecao", "banda", "nuvem_pct", "url", "arquivo", "status", "erro"]
+    with caminho.open("w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=campos)
+        w.writeheader()
+        w.writerows(registros)
 
 
-def criar_argumentos() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Busca, cataloga e baixa imagens Sentinel-2 do INPE para Mato Grosso."
-    )
-    parser.add_argument("--config", type=Path, default=CONFIG_PADRAO)
-    parser.add_argument("--inicio", help="Data inicial YYYY-MM-DD. Sobrescreve o config.yaml.")
-    parser.add_argument("--fim", help="Data final YYYY-MM-DD. Sobrescreve o config.yaml.")
-    parser.add_argument(
-        "--max-itens",
-        type=int,
-        help="Máximo de itens STAC. Use 0 para processar todos os encontrados.",
-    )
-    parser.add_argument(
-        "--baixar",
-        action="store_true",
-        help="Baixa os arquivos. Sem esta opção, apenas cataloga.",
-    )
-    return parser.parse_args()
+def argumentos() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Downloader Sentinel-2 MT com filtro automático de nuvens via SCL.")
+    p.add_argument("--config", type=Path, default=CONFIG_PADRAO)
+    p.add_argument("--inicio")
+    p.add_argument("--fim")
+    p.add_argument("--max-itens", type=int, help="Quantidade de cenas APROVADAS; 0 = todas.")
+    p.add_argument("--baixar", action="store_true")
+    return p.parse_args()
 
 
 def main() -> int:
-    args = criar_argumentos()
-    config = carregar_config(args.config)
+    args = argumentos()
+    cfg = carregar_config(args.config)
+    colecao = cfg["stac"]["colecao"]
+    inicio = args.inicio or cfg["periodo"]["inicio"]
+    fim = args.fim or cfg["periodo"]["fim"]
+    bandas = cfg["bandas"]
+    dcfg = cfg["download"]
+    qcfg = cfg.get("qualidade", {})
+    pcfg = cfg.get("preview", {})
 
-    stac_url = config["stac"]["url"]
-    colecao = config["stac"]["colecao"]
-    bbox = config["area"]["bbox"]
-    bandas = config["bandas"]
+    max_itens = int(dcfg.get("max_itens_teste", 5)) if args.max_itens is None else args.max_itens
+    max_candidatos = int(dcfg.get("max_candidatos_teste", 40))
+    nuvem_max = float(qcfg.get("nuvem_max_pct", 20))
+    filtro_nuvem = bool(qcfg.get("filtrar_nuvens", True))
+    manter_scl = bool(qcfg.get("manter_scl", True))
+    timeout = int(dcfg.get("timeout_segundos", 120))
+    chunk_mb = int(dcfg.get("chunk_mb", 1))
+    pasta = ROOT / dcfg["pasta"]
+    csv_path = ROOT / dcfg["catalogo"]
 
-    inicio = args.inicio or config["periodo"]["inicio"]
-    fim = args.fim or config["periodo"]["fim"]
+    print("=" * 72)
+    print(" Sentinel-2 MT Downloader | seleção para análise agrícola")
+    print("=" * 72)
+    print(f"Período: {inicio} até {fim} | coleção: {colecao}")
+    print(f"Filtro de nuvens/sombra: {'SIM' if filtro_nuvem else 'NÃO'} | máximo: {nuvem_max:.1f}%")
+    print(f"Meta: {'todas' if max_itens == 0 else max_itens} cena(s) aprovada(s)")
 
-    if args.max_itens is None:
-        max_itens = int(config["download"].get("max_itens_teste", 5))
-    else:
-        max_itens = args.max_itens
-
-    pasta_download = ROOT / config["download"]["pasta"]
-    caminho_catalogo = ROOT / config["download"]["catalogo"]
-    timeout = int(config["download"].get("timeout_segundos", 120))
-    chunk_mb = int(config["download"].get("chunk_mb", 1))
-
-    preview_cfg = config.get("preview", {})
-    gerar_rgb = bool(preview_cfg.get("gerar_rgb", True))
-    tamanho_max_px = int(preview_cfg.get("tamanho_max_px", 1600))
-    percentil_min = float(preview_cfg.get("percentil_min", 2))
-    percentil_max = float(preview_cfg.get("percentil_max", 98))
-    qualidade_jpeg = int(preview_cfg.get("qualidade_jpeg", 92))
-
-    print("=" * 62)
-    print(" Sentinel-2 MT Downloader | INPE / Brazil Data Cube")
-    print("=" * 62)
-    print(f"Área:      {config['area']['nome']} ({config['area']['uf']})")
-    print(f"Coleção:   {colecao}")
-    print(f"Período:   {inicio} até {fim}")
-    print(f"Bandas:    {', '.join(bandas)}")
-    print(f"Preview:   {'RGB automático' if gerar_rgb else 'desativado'}")
-    print(f"Download:  {'SIM' if args.baixar else 'NÃO (somente catálogo)'}")
-    print(f"Limite:    {'TODOS' if max_itens == 0 else max_itens}")
-    print()
-
-    print("[1/4] Conectando ao STAC do INPE...")
-    cliente = Client.open(stac_url)
-
-    print("[2/4] Pesquisando itens que intersectam Mato Grosso...")
-    pesquisa = cliente.search(
-        collections=[colecao],
-        bbox=bbox,
-        datetime=f"{inicio}/{fim}",
-    )
-
-    itens = []
-    for item in pesquisa.items():
-        itens.append(item)
-        if max_itens > 0 and len(itens) >= max_itens:
-            break
-
-    if not itens:
-        print("Nenhum item encontrado para os filtros informados.")
-        return 1
-
-    print(f"Encontrados para processamento: {len(itens)}")
-    print("[3/4] Catalogando e processando arquivos...")
+    cliente = Client.open(cfg["stac"]["url"])
+    busca = cliente.search(collections=[colecao], bbox=cfg["area"]["bbox"], datetime=f"{inicio}/{fim}")
+    sessao = requests.Session()
+    sessao.headers.update({"User-Agent": "sentinel2-mt-downloader/1.2"})
 
     registros: list[dict] = []
-    sessao = requests.Session()
-    sessao.headers.update({"User-Agent": "sentinel2-mt-downloader/1.1"})
+    aprovadas = descartadas = candidatos = previews = erros = 0
 
-    for indice, item in enumerate(itens, start=1):
+    for item in busca.items():
+        if max_itens > 0 and aprovadas >= max_itens:
+            break
+        candidatos += 1
+        if max_itens > 0 and candidatos > max_candidatos:
+            print(f"[LIMITE] {max_candidatos} candidatos avaliados.")
+            break
+
         data = data_item(item)
-        print(f"\n[{indice}/{len(itens)}] {item.id} | {data}")
+        pasta_item = pasta / data / item.id
+        print(f"\n[CANDIDATO {candidatos}] {item.id} | {data}")
 
-        if indice == 1:
-            print("Assets disponíveis:", ", ".join(sorted(item.assets.keys())))
+        if not args.baixar:
+            registros.append(reg(item, data, colecao, "CENA", "nao_avaliado", "candidato_catalogado"))
+            aprovadas += 1
+            continue
 
-        arquivos_item: dict[str, Path] = {}
-        pasta_item = pasta_download / data / item.id
+        nuvem: float | str = "nao_avaliado"
+        if filtro_nuvem:
+            scl = localizar_asset(item, "SCL")
+            if scl is None:
+                print("  [DESCARTADA] SCL indisponível.")
+                registros.append(reg(item, data, colecao, "SCL", "indisponivel", "descartada_sem_scl"))
+                continue
+
+            scl_path = pasta_item / "qualidade" / f"SCL{extensao(scl.href)}"
+            try:
+                status_scl = baixar(sessao, scl.href, scl_path, timeout, chunk_mb)
+                nuvem = percentual_nuvem_scl(scl_path)
+                print(f"  [QUALIDADE] nuvem/sombra estimada: {nuvem:.2f}%")
+                if nuvem > nuvem_max:
+                    descartadas += 1
+                    print(f"  [DESCARTADA] acima de {nuvem_max:.1f}%; bandas grandes não serão baixadas.")
+                    registros.append(reg(item, data, colecao, "SCL", nuvem, "descartada_nuvem", scl.href, str(scl_path.relative_to(ROOT))))
+                    if not manter_scl:
+                        scl_path.unlink(missing_ok=True)
+                    continue
+                registros.append(reg(item, data, colecao, "SCL", nuvem, status_scl, scl.href, str(scl_path.relative_to(ROOT))))
+            except Exception as exc:
+                erros += 1
+                print(f"  [ERRO] SCL: {exc}")
+                registros.append(reg(item, data, colecao, "SCL", "erro", "erro_qualidade", scl.href, str(scl_path.relative_to(ROOT)), str(exc)))
+                continue
+
+        aprovadas += 1
+        print(f"  [APROVADA {aprovadas}] baixando bandas científicas...")
+        arquivos: dict[str, Path] = {}
 
         for banda in bandas:
             asset = localizar_asset(item, banda)
-
             if asset is None:
-                print(f"  [AVISO] Banda/asset {banda} não encontrado.")
-                registros.append(
-                    {
-                        "id": item.id,
-                        "data": data,
-                        "colecao": colecao,
-                        "banda": banda,
-                        "url": "",
-                        "arquivo": "",
-                        "status": "asset_nao_encontrado",
-                        "erro": "",
-                    }
-                )
+                registros.append(reg(item, data, colecao, banda, nuvem, "asset_nao_encontrado"))
                 continue
-
-            extensao = extensao_da_url(asset.href)
-            destino = pasta_item / f"{banda}{extensao}"
-            status = "catalogado"
-            erro = ""
-
-            if args.baixar:
-                try:
-                    status = baixar_arquivo(
-                        sessao=sessao,
-                        url=asset.href,
-                        destino=destino,
-                        timeout=timeout,
-                        chunk_mb=chunk_mb,
-                    )
-                    arquivos_item[banda] = destino
-                    print(f"  [OK] {banda}: {status}")
-                except Exception as exc:
-                    status = "erro_download"
-                    erro = str(exc)
-                    print(f"  [ERRO] {banda}: {exc}")
-            else:
-                print(f"  [CATÁLOGO] {banda}")
-
-            registros.append(
-                {
-                    "id": item.id,
-                    "data": data,
-                    "colecao": colecao,
-                    "banda": banda,
-                    "url": asset.href,
-                    "arquivo": str(destino.relative_to(ROOT)),
-                    "status": status,
-                    "erro": erro,
-                }
-            )
-
-        if args.baixar and gerar_rgb:
-            preview_destino = pasta_item / "preview_rgb.jpg"
+            destino = pasta_item / f"{banda}{extensao(asset.href)}"
             try:
-                status_preview = gerar_preview_rgb(
-                    arquivos_item=arquivos_item,
-                    destino=preview_destino,
-                    tamanho_max_px=tamanho_max_px,
-                    percentil_min=percentil_min,
-                    percentil_max=percentil_max,
-                    qualidade_jpeg=qualidade_jpeg,
-                )
-                print(f"  [PREVIEW] RGB: {status_preview} -> {preview_destino.name}")
-                registros.append(
-                    {
-                        "id": item.id,
-                        "data": data,
-                        "colecao": colecao,
-                        "banda": "RGB_PREVIEW",
-                        "url": "",
-                        "arquivo": str(preview_destino.relative_to(ROOT)),
-                        "status": status_preview,
-                        "erro": "",
-                    }
-                )
+                status = baixar(sessao, asset.href, destino, timeout, chunk_mb)
+                arquivos[banda] = destino
+                print(f"  [OK] {banda}: {status}")
+                erro = ""
             except Exception as exc:
-                print(f"  [ERRO] Preview RGB: {exc}")
-                registros.append(
-                    {
-                        "id": item.id,
-                        "data": data,
-                        "colecao": colecao,
-                        "banda": "RGB_PREVIEW",
-                        "url": "",
-                        "arquivo": str(preview_destino.relative_to(ROOT)),
-                        "status": "erro_preview",
-                        "erro": str(exc),
-                    }
-                )
+                status, erro = "erro_download", str(exc)
+                erros += 1
+                print(f"  [ERRO] {banda}: {exc}")
+            registros.append(reg(item, data, colecao, banda, nuvem, status, asset.href, str(destino.relative_to(ROOT)), erro))
 
-    print("\n[4/4] Salvando catálogo CSV...")
-    salvar_catalogo(caminho_catalogo, registros)
+        if bool(pcfg.get("gerar_rgb", True)):
+            preview = pasta_item / "preview_rgb.jpg"
+            try:
+                status = gerar_rgb(arquivos, preview, pcfg)
+                previews += int(status == "gerado")
+                print(f"  [PREVIEW] {status}: {preview.name}")
+                registros.append(reg(item, data, colecao, "RGB_PREVIEW", nuvem, status, arquivo=str(preview.relative_to(ROOT))))
+            except Exception as exc:
+                erros += 1
+                print(f"  [ERRO] preview: {exc}")
+                registros.append(reg(item, data, colecao, "RGB_PREVIEW", nuvem, "erro_preview", arquivo=str(preview.relative_to(ROOT)), erro=str(exc)))
 
-    baixados = sum(r["status"] == "baixado" for r in registros)
-    existentes = sum(r["status"] == "ja_existia" for r in registros)
-    previews = sum(r["status"] == "gerado" and r["banda"] == "RGB_PREVIEW" for r in registros)
-    erros = sum(r["status"] in {"erro_download", "erro_preview"} for r in registros)
+    salvar_csv(csv_path, registros)
 
-    print("\n" + "=" * 62)
-    print(" FINALIZADO")
-    print("=" * 62)
-    print(f"Itens STAC:        {len(itens)}")
-    print(f"Registros CSV:     {len(registros)}")
-    print(f"Arquivos baixados: {baixados}")
-    print(f"Já existentes:     {existentes}")
-    print(f"Previews RGB:      {previews}")
-    print(f"Erros:             {erros}")
-    print(f"Catálogo:          {caminho_catalogo.relative_to(ROOT)}")
-
+    print("\n" + "=" * 72)
+    print(f"Candidatos: {candidatos} | aprovadas: {aprovadas} | descartadas por nuvem: {descartadas}")
+    print(f"Previews: {previews} | erros: {erros}")
+    print(f"Catálogo: {csv_path.relative_to(ROOT)}")
     if not args.baixar:
-        print("\nModo seguro: nenhum GeoTIFF foi baixado.")
-        print("Para baixar 5 itens: python src\\baixar_inpe_mt.py --baixar --max-itens 5")
-        print("Para todos os itens: python src\\baixar_inpe_mt.py --baixar --max-itens 0")
-
+        print("Modo seguro: para avaliar nuvem e baixar 1 cena boa:")
+        print("python src\\baixar_inpe_mt.py --baixar --max-itens 1")
     return 0 if erros == 0 else 2
 
 
