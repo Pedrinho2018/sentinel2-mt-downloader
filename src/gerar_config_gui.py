@@ -16,6 +16,7 @@ from sentinel2_mt.gui_support import (
     montar_argumentos_operacao,
     normalizar_bbox,
 )
+from sentinel2_mt.gui_theme import CORES, folha_estilos
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,67 +28,7 @@ SCRIPT_CLI = ROOT / "src" / "baixar_inpe_mt.py"
 bbox_para_yaml = normalizar_bbox
 
 
-ESTILO = """
-QMainWindow, QWidget#root { background: #f4f7f6; color: #17201d; }
-QWidget { font-family: "Inter", "Noto Sans", sans-serif; font-size: 13px; }
-QFrame#sidebar { background: #102b24; border: none; }
-QLabel#brandMark {
-    background: #49c98b; color: #092019; border-radius: 20px;
-    font-size: 16px; font-weight: 800;
-}
-QLabel#brandTitle { color: #ffffff; font-size: 16px; font-weight: 700; }
-QLabel#brandSub { color: #9cc4b7; font-size: 11px; }
-QPushButton#navButton {
-    color: #cbe2db; background: transparent; border: none;
-    border-radius: 8px; padding: 11px 14px; text-align: left;
-}
-QPushButton#navButton:hover { background: #173b32; color: white; }
-QPushButton#navButton:checked { background: #225344; color: white; font-weight: 650; }
-QLabel#pageTitle { font-size: 24px; font-weight: 750; color: #12211c; }
-QLabel#pageSubtitle { color: #66736e; font-size: 12px; }
-QLabel#statusChip {
-    background: #e5f7ee; color: #19754c; border: 1px solid #bee8d3;
-    border-radius: 12px; padding: 5px 10px; font-weight: 650;
-}
-QFrame#card {
-    background: white; border: 1px solid #dce6e2; border-radius: 12px;
-}
-QLabel#cardTitle { font-size: 15px; font-weight: 700; color: #1a2a24; }
-QLabel#cardHelp { color: #73807b; font-size: 11px; }
-QLineEdit, QDateEdit, QSpinBox, QDoubleSpinBox, QComboBox, QPlainTextEdit, QListWidget, QTreeWidget {
-    background: #fbfdfc; border: 1px solid #cfdcd7; border-radius: 7px;
-    padding: 7px; selection-background-color: #49c98b;
-}
-QLineEdit:focus, QDateEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus,
-QComboBox:focus, QPlainTextEdit:focus, QListWidget:focus, QTreeWidget:focus { border: 1px solid #279a66; }
-QPushButton#primaryButton {
-    background: #168a58; color: white; border: none; border-radius: 8px;
-    padding: 9px 16px; font-weight: 700;
-}
-QPushButton#primaryButton:hover { background: #10784b; }
-QPushButton#primaryButton:disabled { background: #9db8ad; }
-QPushButton#secondaryButton {
-    background: #eef4f1; color: #24473b; border: 1px solid #cbdad4;
-    border-radius: 8px; padding: 8px 14px; font-weight: 600;
-}
-QPushButton#secondaryButton:hover { background: #e1eee8; }
-QPushButton#dangerButton {
-    background: #fff0ee; color: #a63d32; border: 1px solid #f2c8c2;
-    border-radius: 8px; padding: 8px 14px; font-weight: 650;
-}
-QPushButton#dangerButton:hover { background: #ffe3df; }
-QPushButton#dangerButton:disabled { background: #f1f3f2; color: #aab3af; border-color: #dfe4e2; }
-QProgressBar { border: none; border-radius: 3px; background: #dce8e3; max-height: 6px; }
-QProgressBar::chunk { background: #35b978; border-radius: 3px; }
-QPlainTextEdit#log { background: #10211c; color: #d8eee6; border: none; font-family: monospace; }
-QLabel#previewImage {
-    background: #eaf1ee; border: 1px dashed #b8cac3; border-radius: 10px;
-    color: #687b74;
-}
-QSplitter::handle { background: #edf2f0; width: 4px; height: 4px; }
-QScrollArea { border: none; background: transparent; }
-QScrollArea > QWidget > QWidget { background: transparent; }
-"""
+ESTILO = folha_estilos()
 
 
 def botao(texto: str, tipo: str = "secondaryButton") -> QtWidgets.QPushButton:
@@ -95,6 +36,35 @@ def botao(texto: str, tipo: str = "secondaryButton") -> QtWidgets.QPushButton:
     componente.setObjectName(tipo)
     componente.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
     return componente
+
+
+def configurar_aplicacao(app: QtWidgets.QApplication) -> None:
+    """Neutraliza temas do sistema e garante a mesma legibilidade em todo desktop."""
+    if app.property("sentinel2TemaAplicado"):
+        return
+    app.setStyle("Fusion")
+    paleta = QtGui.QPalette()
+    papel = QtGui.QPalette.ColorRole
+    paleta.setColor(papel.Window, QtGui.QColor(CORES["fundo"]))
+    paleta.setColor(papel.WindowText, QtGui.QColor(CORES["texto"]))
+    paleta.setColor(papel.Base, QtGui.QColor(CORES["superficie_campo"]))
+    paleta.setColor(papel.AlternateBase, QtGui.QColor(CORES["secundario_fundo"]))
+    paleta.setColor(papel.ToolTipBase, QtGui.QColor(CORES["superficie"]))
+    paleta.setColor(papel.ToolTipText, QtGui.QColor(CORES["texto"]))
+    paleta.setColor(papel.Text, QtGui.QColor(CORES["texto"]))
+    paleta.setColor(papel.Button, QtGui.QColor(CORES["secundario_fundo"]))
+    paleta.setColor(papel.ButtonText, QtGui.QColor(CORES["secundario_texto"]))
+    paleta.setColor(papel.Highlight, QtGui.QColor(CORES["destaque_claro"]))
+    paleta.setColor(papel.HighlightedText, QtGui.QColor(CORES["destaque_texto"]))
+    paleta.setColor(papel.Link, QtGui.QColor(CORES["destaque"]))
+    paleta.setColor(papel.PlaceholderText, QtGui.QColor(CORES["texto_suave"]))
+    desabilitado = QtGui.QPalette.ColorGroup.Disabled
+    paleta.setColor(desabilitado, papel.Text, QtGui.QColor(CORES["desabilitado_texto"]))
+    paleta.setColor(
+        desabilitado, papel.ButtonText, QtGui.QColor(CORES["desabilitado_texto"])
+    )
+    app.setPalette(paleta)
+    app.setProperty("sentinel2TemaAplicado", True)
 
 
 class Cartao(QtWidgets.QFrame):
@@ -212,6 +182,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
+        configurar_aplicacao(QtWidgets.QApplication.instance())
         self.setWindowTitle("Sentinel-2 MT • Central de Operações")
         self.resize(1480, 920)
         self.setMinimumSize(1120, 720)
@@ -895,6 +866,7 @@ def main() -> int:
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName("Sentinel-2 MT")
     app.setOrganizationName("Sentinel2 MT")
+    configurar_aplicacao(app)
     janela = MainWindow()
     janela.show()
     return app.exec()

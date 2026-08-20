@@ -33,3 +33,17 @@ A seleção de área usa o OpenStreetMap sem chave de API. Se o mapa estiver sem
 conexão, as quatro coordenadas ainda podem ser preenchidas manualmente.
 
 O token é criado automaticamente no primeiro login e não deve ser versionado.
+
+## Legibilidade e validação
+
+A interface usa a paleta Qt Fusion para não herdar combinações ilegíveis do
+tema claro ou escuro do sistema. Campos, menus, calendários, logs, botões e
+textos auxiliares usam pares de cores com contraste WCAG AA de pelo menos
+`4.5:1`.
+
+Para executar os testes de contraste, navegação, perfis, YAML, subprocessos e
+sincronização simulada:
+
+```bash
+.venv/bin/python -m unittest discover -v
+```
