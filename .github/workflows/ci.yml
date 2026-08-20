@@ -33,6 +33,7 @@ jobs:
       - name: Validate command imports
         run: |
           python src/gerar_dataset_soja.py --help > /dev/null
+          python src/gerar_dataset_5000.py --help > /dev/null
           python src/pipeline.py --help > /dev/null
 
       - name: Live smoke test - Planetary Computer Data API NPY
@@ -40,3 +41,6 @@ jobs:
 
       - name: End-to-end - gerar 1 patch real
         run: python src/pipeline.py --mes 2026-04 --max-patches 1 --limpar
+
+      - name: End-to-end - fila 5000 em modo reduzido com máscara agrícola
+        run: python src/gerar_dataset_5000.py --mes 2026-04 --meta-total 1 --limpar
