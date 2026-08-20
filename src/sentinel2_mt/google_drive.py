@@ -45,7 +45,10 @@ class AutenticadorGoogleDrive:
                 credenciais = self._autorizar_no_navegador(fluxo)
             token_path.parent.mkdir(parents=True, exist_ok=True)
             token_path.write_text(credenciais.to_json(), encoding="utf-8")
-
+            try:
+                token_path.chmod(0o600)
+            except OSError:
+                pass
         from googleapiclient.discovery import build
 
         return build("drive", "v3", credentials=credenciais, cache_discovery=False)
