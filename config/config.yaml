@@ -43,3 +43,13 @@ download:
   max_itens_teste: 5
   # Evita procurar indefinidamente se houver muita nuvem.
   max_candidatos_teste: 40
+
+# Sincronização opcional das imagens diretamente pela API do Google Drive/OAuth.
+sincronizacao:
+  pasta_remota: "${PASTA_REMOTA:-sentinel2-mt}"
+  oauth_json: "${GOOGLE_OAUTH_JSON:-}"
+  token_json: "${GOOGLE_TOKEN_JSON:-config/google-token.json}"
+  # Opcional: ID de uma pasta existente; por padrão usa Meu Drive.
+  pasta_id: "${GOOGLE_PASTA_ID:-root}"
+  tamanho_lote: 100
+  extensoes: [".tif", ".tiff", ".jpg", ".jpeg"]

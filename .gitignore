@@ -14,6 +14,9 @@ __pycache__/
 # Segredos e arquivos locais
 .env
 .env.*
+config/google-oauth.json
+config/google-token.json
+config/client_secret_*.json
 
 # IDE / SO
 .vscode/
@@ -23,3 +26,9 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Artefatos de build e pacotes
+/build/
+/dist/
+/release/
+/.build/
