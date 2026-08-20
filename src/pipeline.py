@@ -19,24 +19,26 @@ def executar(etapa: str, argumentos: list[str]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Executa o pipeline temporal: série -> mosaico -> patches -> validação."
+        description="Pipeline correto: L2A real -> mosaico mensal limpo -> patches -> validação."
     )
-    parser.add_argument("--tile", help="Tile específico, ex.: 014018")
+    parser.add_argument("--tile", help="MGRS tile específico, ex.: 21LWG")
     parser.add_argument("--max-tiles", type=int, default=1, help="0 = todos")
     parser.add_argument("--max-patches", type=int, default=20, help="0 = todos")
-    parser.add_argument("--cenas-por-mes", type=int, default=2)
+    parser.add_argument(
+        "--cenas-por-mes",
+        type=int,
+        default=None,
+        help="Sobrescreve config. Se omitido, usa config/config.yaml (padrão atual: 6).",
+    )
     parser.add_argument("--limpar", action="store_true", help="Limpa mosaicos/patches antes de recriar")
     parser.add_argument("--pular-download", action="store_true")
     args = parser.parse_args()
 
     try:
         if not args.pular_download:
-            serie_args = [
-                "--max-tiles",
-                str(args.max_tiles),
-                "--cenas-por-mes",
-                str(args.cenas_por_mes),
-            ]
+            serie_args = ["--max-tiles", str(args.max_tiles)]
+            if args.cenas_por_mes is not None:
+                serie_args += ["--cenas-por-mes", str(args.cenas_por_mes)]
             if args.tile:
                 serie_args += ["--tile", args.tile]
             executar("baixar_series_temporais.py", serie_args)
@@ -62,9 +64,10 @@ def main() -> int:
         return exc.returncode or 1
 
     print("\n" + "=" * 84)
-    print("PIPELINE TEMPORAL CONCLUÍDO COM SUCESSO")
+    print("PIPELINE L2A TEMPORAL CONCLUÍDO")
     print("=" * 84)
-    print("Confira os previews em data/patches e os catálogos em catalogo/.")
+    print("Confira primeiro data/mosaicos_temporais/*/*/preview_rgb.jpg")
+    print("Depois confira os patches em data/patches/.")
     return 0
 
 
