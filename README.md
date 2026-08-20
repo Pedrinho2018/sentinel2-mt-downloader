@@ -299,13 +299,15 @@ Para publicar uma versão, atualize `__version__` em
 `src/sentinel2_mt/__init__.py`, crie uma tag com a mesma versão e envie-a:
 
 ```bash
-git tag v2.0.0
-git push origin v2.0.0
+git tag -a v1.0.0 -m "release: v1.0.0"
+git push origin v1.0.0
 ```
 
 Uma execução manual do workflow gera artefatos para validação sem publicar uma
 GitHub Release. Consulte [packaging/README.md](packaging/README.md) para o build
-local e os comandos de instalação.
+local e os comandos de instalação. O padrão adotado para versões, branches,
+commits e releases está documentado em
+[docs/versionamento-e-commits.md](docs/versionamento-e-commits.md).
 
 ## Contribuindo por fork
 
