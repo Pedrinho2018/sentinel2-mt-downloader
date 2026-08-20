@@ -49,10 +49,49 @@ patches:
   percentil_min: 2
   percentil_max: 98
 
-  # Para o teste salva só preview + catálogo. Depois podemos ativar os arrays científicos.
+  # Para não encher o PC, por padrão salva só preview + catálogo.
   salvar_npz: false
+
+# Pré-filtro de área agrícola. Serve apenas para evitar mata/água/cidade em excesso.
+# NÃO é rótulo de soja e NÃO substitui a catalogação humana.
+mascara_agricola:
+  usar: true
+  colecao: "esa-worldcover"
+  asset: "map"
+  ano_referencia: 2021
+  classe_cropland: 40
+  cropland_min_pct: 35.0
+  cobertura_min_pct: 95.0
+  tamanho_amostra_px: 64
+  cache: "catalogo/cache_mascara_agricola.csv"
+
+# Produção da fila principal de catalogação.
+dataset_5000:
+  meta_total_imagens: 5000
+  seed_espacial: 20260820
+
+  # Mantém uma reserva de localizações agrícolas caso algum patch seja reprovado
+  # em meses muito nublados.
+  fator_reserva_espacial: 2.0
+
+  classes_rotulacao:
+    - "SOJA"
+    - "NAO_SOJA"
+    - "INCERTO"
+
+  # O split é calculado pelo spatial_id. O mesmo local nunca muda de conjunto.
+  split:
+    treino_pct: 70
+    validacao_pct: 15
+    teste_pct: 15
 
 saida:
   pasta_patches: "data/patches_soja"
   catalogo: "catalogo/catalogo_soja.csv"
   resumo: "catalogo/resumo_soja.json"
+
+saida_5000:
+  pasta_patches: "data/dataset_soja_5000"
+  catalogo: "catalogo/catalogo_soja_5000.csv"
+  fila: "catalogo/fila_catalogacao_5000.csv"
+  resumo: "catalogo/resumo_soja_5000.json"
