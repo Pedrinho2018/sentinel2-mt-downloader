@@ -8,16 +8,24 @@ area:
   # Bounding box aproximada em WGS84: [oeste, sul, leste, norte]
   bbox: [-61.65, -18.05, -50.20, -7.30]
 
+# Safra usada como ponto de partida. Pode ser sobrescrita pela linha de comando.
 periodo:
   inicio: "2025-09-01"
   fim: "2026-04-30"
 
+# Bandas científicas úteis para análise de vegetação/soja.
 bandas:
   - "B02"
   - "B03"
   - "B04"
   - "B08"
   - "NDVI"
+
+# Antes das bandas grandes, o programa baixa SCL e mede nuvem/sombra.
+qualidade:
+  filtrar_nuvens: true
+  nuvem_max_pct: 20
+  manter_scl: true
 
 preview:
   gerar_rgb: true
@@ -31,4 +39,7 @@ download:
   catalogo: "catalogo/catalogo_imagens.csv"
   timeout_segundos: 120
   chunk_mb: 1
+  # Quantidade de cenas BOAS desejadas no teste.
   max_itens_teste: 5
+  # Evita procurar indefinidamente se houver muita nuvem.
+  max_candidatos_teste: 40
