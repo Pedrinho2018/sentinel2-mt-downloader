@@ -46,6 +46,12 @@ O login sempre exibe o seletor de contas. Escolha exatamente o e-mail incluído
 em **Test users**; estar conectado a outra conta Google no navegador não concede
 acesso ao projeto.
 
+Se o navegador informar que `localhost` recusou a conexão, não recarregue uma
+aba antiga: o endereço usa uma porta temporária que só existe enquanto a
+sincronização está aguardando o login. Volte à GUI, cancele a operação se ainda
+estiver ativa e execute a sincronização novamente. O callback atual usa
+explicitamente `127.0.0.1` para evitar incompatibilidade entre IPv4 e IPv6.
+
 Essa restrição é aplicada pelo Google antes de o programa receber o token e não
 pode ser removida pelo código local. Para distribuição pública, o proprietário
 deve publicar/verificar o aplicativo. Consulte a
