@@ -5,15 +5,15 @@ stac:
 area:
   nome: "Mato Grosso"
   uf: "MT"
-  # Bounding box aproximada em WGS84: [oeste, sul, leste, norte]
+  # Busca inicial por bounding box. O catálogo de patches preserva as coordenadas
+  # de cada recorte para posterior cruzamento com limites oficiais e dados agrícolas.
   bbox: [-61.65, -18.05, -50.20, -7.30]
 
-# Safra usada como ponto de partida. Pode ser sobrescrita pela linha de comando.
 periodo:
   inicio: "2025-09-01"
   fim: "2026-04-30"
 
-# Bandas científicas úteis para análise de vegetação/soja.
+# Bandas científicas usadas no projeto de vigor vegetativo/soja.
 bandas:
   - "B02"
   - "B03"
@@ -21,7 +21,7 @@ bandas:
   - "B08"
   - "NDVI"
 
-# Antes das bandas grandes, o programa baixa SCL e mede nuvem/sombra.
+# Filtro da cena antes do download das bandas grandes.
 qualidade:
   filtrar_nuvens: true
   nuvem_max_pct: 20
@@ -39,7 +39,23 @@ download:
   catalogo: "catalogo/catalogo_imagens.csv"
   timeout_segundos: 120
   chunk_mb: 1
-  # Quantidade de cenas BOAS desejadas no teste.
   max_itens_teste: 5
-  # Evita procurar indefinidamente se houver muita nuvem.
   max_candidatos_teste: 40
+
+# Segunda etapa: transforma cenas grandes em unidades adequadas para catalogação.
+patches:
+  # Sentinel-2 a 10 m: 256 px ~= 2,56 km por lado.
+  tamanho_px: 256
+  passo_px: 256
+
+  # O filtro por patch é mais rígido que o filtro da cena.
+  nuvem_max_pct: 10
+  dados_validos_min_pct: 85
+
+  # Para evitar multiplicar o armazenamento, por padrão exportamos apenas o JPG
+  # para rotulagem. O CSV guarda janela/coordenadas para recuperar as bandas originais.
+  exportar_tifs: false
+
+  pasta: "data/patches"
+  catalogo: "catalogo/catalogo_patches.csv"
+  resumo: "catalogo/resumo_patches.json"
