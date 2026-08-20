@@ -34,3 +34,6 @@ jobs:
         run: |
           python src/gerar_dataset_soja.py --help > /dev/null
           python src/pipeline.py --help > /dev/null
+
+      - name: Live smoke test - Planetary Computer Data API NPY
+        run: python src/smoke_data_api.py
