@@ -1,9 +1,15 @@
 import pathlib
+from tempfile import TemporaryDirectory
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 from sentinel2_mt.config_builder import GeradorConfiguracao
+from sentinel2_mt.gui_support import (
+    LocalConfigStore,
+    montar_argumentos_operacao,
+    normalizar_bbox,
+)
 
 
 class TestGerarConfigGui(unittest.TestCase):
@@ -54,6 +60,92 @@ class TestGerarConfigGui(unittest.TestCase):
     def test_rejeita_bbox_invertida(self):
         with self.assertRaisesRegex(ValueError, "oeste < leste"):
             self.gerador.gerar({"bbox": [3, -2, -1, 4]})
+
+    def test_bbox_para_yaml_normaliza_ordem(self):
+        self.assertEqual(normalizar_bbox([3, 5, -1, 2]), [-1, 2, 3, 5])
+
+    def test_local_config_store_persists_region(self):
+        with TemporaryDirectory() as temporario:
+            store = LocalConfigStore(pathlib.Path(temporario) / "perfis.db")
+            dados = {
+                "nome_regiao": "Região teste",
+                "uf": "MT",
+                "bbox": [-50, -10, -40, 0],
+                "colecao": "S2-16D-2",
+                "oauth_json": "/segredo/oauth.json",
+                "token_json": "/segredo/token.json",
+            }
+            item_id = store.salvar(dados)
+            item = store.carregar(item_id)
+
+            self.assertIsNotNone(item)
+            self.assertEqual(store.listar()[0]["nome_regiao"], "Região teste")
+            self.assertNotIn("oauth_json", item["payload"])
+            self.assertNotIn("token_json", item["payload"])
+
+    def test_monta_argumentos_para_download(self):
+        argumentos = montar_argumentos_operacao(
+            "baixar",
+            "config/config.yaml",
+            inicio="2025-09-01",
+            fim="2026-04-30",
+            max_itens=8,
+        )
+
+        self.assertEqual(
+            argumentos,
+            [
+                "--config",
+                "config/config.yaml",
+                "--baixar",
+                "--inicio",
+                "2025-09-01",
+                "--fim",
+                "2026-04-30",
+                "--max-itens",
+                "8",
+            ],
+        )
+
+    def test_monta_argumentos_para_sincronizacao(self):
+        argumentos = montar_argumentos_operacao(
+            "sincronizar",
+            "config/config.yaml",
+            oauth_json="${GOOGLE_OAUTH_JSON:-}",
+            tamanho_lote=25,
+        )
+
+        self.assertEqual(
+            argumentos,
+            ["--config", "config/config.yaml", "--sincronizar", "--lote", "25"],
+        )
+
+    def test_local_config_store_agrupar_por_uf(self):
+        with TemporaryDirectory() as temporario:
+            store = LocalConfigStore(pathlib.Path(temporario) / "perfis_uf.db")
+            store.salvar_configuracao(
+                {
+                    "nome_regiao": "MT Norte",
+                    "uf": "MT",
+                    "bbox": [-50, -10, -40, 0],
+                    "colecao": "S2-16D-2",
+                }
+            )
+            store.salvar_configuracao(
+                {
+                    "nome_regiao": "SP Centro",
+                    "uf": "SP",
+                    "bbox": [-47, -25, -45, -20],
+                    "colecao": "S2-16D-2",
+                }
+            )
+            grupos = store.listar_presets_por_uf()
+
+            self.assertIn("MT", grupos)
+            self.assertIn("SP", grupos)
+            self.assertTrue(
+                any(perfil["nome_regiao"] == "MT Norte" for perfil in grupos["MT"])
+            )
 
 
 if __name__ == "__main__":
