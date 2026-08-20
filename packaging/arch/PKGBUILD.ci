@@ -1,0 +1,18 @@
+pkgname=sentinel2-mt-downloader-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc="Downloader e sincronizador de imagens Sentinel-2 de Mato Grosso"
+arch=('x86_64')
+url="https://github.com/coldrenatinho/sentinel2-mt-downloader"
+license=('custom')
+depends=('glibc')
+provides=('sentinel2-mt-downloader')
+conflicts=('sentinel2-mt-downloader')
+source=('sentinel2-mt' 'config.yaml' 'sentinel2-mt.desktop')
+sha256sums=('SKIP' 'SKIP' 'SKIP')
+
+package() {
+  install -Dm755 sentinel2-mt "$pkgdir/usr/bin/sentinel2-mt"
+  install -Dm644 config.yaml "$pkgdir/etc/sentinel2-mt/config.yaml"
+  install -Dm644 sentinel2-mt.desktop "$pkgdir/usr/share/applications/sentinel2-mt.desktop"
+}

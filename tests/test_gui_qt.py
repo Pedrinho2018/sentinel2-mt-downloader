@@ -1,0 +1,204 @@
+from __future__ import annotations
+
+import importlib.util
+import os
+import sys
+import time
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest import TestCase, skipUnless
+
+import yaml
+
+
+PYSIDE_DISPONIVEL = importlib.util.find_spec("PySide6") is not None
+
+if PYSIDE_DISPONIVEL:
+    if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6 import QtCore, QtWidgets
+
+    import gerar_config_gui as gui
+
+
+@skipUnless(PYSIDE_DISPONIVEL, "PySide6 é uma dependência opcional da GUI")
+class TestGuiQt(TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+        class MapaFake(QtWidgets.QWidget):
+            areaSelecionada = QtCore.Signal(object)
+
+            def __init__(self, bbox_inicial, parent=None):
+                super().__init__(parent)
+                self.bbox = list(bbox_inicial)
+
+            def exibir_bbox(self, bbox):
+                self.bbox = list(bbox)
+
+            def capturar_bbox(self):
+                self.areaSelecionada.emit(self.bbox)
+
+        gui.MapaWidget = MapaFake
+
+    def setUp(self) -> None:
+        self.temporario = TemporaryDirectory()
+        self.pasta = Path(self.temporario.name)
+        gui.LOCAL_DB = self.pasta / "perfis.db"
+        self.script_original = gui.SCRIPT_CLI
+        self.janela = gui.MainWindow()
+        self.janela.output_path.setText(str(self.pasta / "config.yaml"))
+        self.janela.show()
+        self.app.processEvents()
+
+    def tearDown(self) -> None:
+        if self.janela.processo.state() != QtCore.QProcess.ProcessState.NotRunning:
+            self.janela.processo.kill()
+            self.janela.processo.waitForFinished(1000)
+        self.janela.close()
+        gui.SCRIPT_CLI = self.script_original
+        self.temporario.cleanup()
+
+    def _aguardar_processo(self, segundos: float = 5) -> None:
+        limite = time.monotonic() + segundos
+        while (
+            self.janela.processo.state() != QtCore.QProcess.ProcessState.NotRunning
+            and time.monotonic() < limite
+        ):
+            self.app.processEvents()
+            QtCore.QThread.msleep(10)
+        self.app.processEvents()
+
+    def test_navegacao_exibe_todas_as_paginas(self) -> None:
+        for indice, (titulo, _) in enumerate(self.janela.PAGINAS):
+            self.janela.botoes_navegacao[indice].click()
+            self.app.processEvents()
+
+            self.assertEqual(self.janela.stack.currentIndex(), indice)
+            self.assertEqual(self.janela.titulo_pagina.text(), titulo)
+            self.assertTrue(self.janela.stack.currentWidget().isVisible())
+
+    def test_salva_yaml_com_os_dados_do_formulario(self) -> None:
+        self.janela.nome_regiao.setText("Norte de MT")
+        destino = self.janela._salvar_configuracao(avisar=False)
+
+        self.assertEqual(destino, self.pasta / "config.yaml")
+        payload = yaml.safe_load(destino.read_text(encoding="utf-8"))
+        self.assertEqual(payload["area"]["nome"], "Norte de MT")
+        self.assertEqual(payload["sincronizacao"]["tamanho_lote"], 100)
+
+    def test_aplica_area_selecionada_no_mapa(self) -> None:
+        self.janela.mapa.bbox = [-59.5, -14.2, -57.1, -12.4]
+        self.janela.mapa.capturar_bbox()
+        self.app.processEvents()
+
+        self.assertAlmostEqual(self.janela.oeste.value(), -59.5)
+        self.assertAlmostEqual(self.janela.sul.value(), -14.2)
+        self.assertAlmostEqual(self.janela.leste.value(), -57.1)
+        self.assertAlmostEqual(self.janela.norte.value(), -12.4)
+
+    def test_perfis_sao_agrupados_e_carregados_corretamente(self) -> None:
+        primeiro = self.janela.store.salvar(
+            {
+                "nome_regiao": "MT Norte",
+                "uf": "MT",
+                "bbox": [-58, -13, -55, -10],
+                "bandas": ["B02"],
+            }
+        )
+        segundo = self.janela.store.salvar(
+            {
+                "nome_regiao": "MT Sul",
+                "uf": "MT",
+                "bbox": [-57, -17, -54, -14],
+                "bandas": ["B04"],
+            }
+        )
+        self.janela._recarregar_perfis()
+
+        grupo = self.janela.perfis.topLevelItem(0)
+        self.assertEqual(grupo.text(0), "MT")
+        self.assertEqual(grupo.childCount(), 2)
+        ids = {grupo.child(i).data(0, QtCore.Qt.ItemDataRole.UserRole) for i in range(2)}
+        self.assertEqual(ids, {primeiro, segundo})
+
+        item_segundo = next(
+            grupo.child(i)
+            for i in range(grupo.childCount())
+            if grupo.child(i).data(0, QtCore.Qt.ItemDataRole.UserRole) == segundo
+        )
+        self.janela.perfis.setCurrentItem(item_segundo)
+        perfil = self.janela._perfil_selecionado()
+        self.assertEqual(perfil["nome_regiao"], "MT Sul")
+
+    def test_executa_cli_e_exibe_saida_no_log(self) -> None:
+        script = self.pasta / "cli_fake.py"
+        script.write_text(
+            "import sys\nprint('operacao-fake-ok')\nprint('argumentos=' + ' '.join(sys.argv[1:]))\n",
+            encoding="utf-8",
+        )
+        gui.SCRIPT_CLI = script
+        indice = self.janela.operacao.findData("baixar")
+        self.janela.operacao.setCurrentIndex(indice)
+        self.janela.max_execucao.setValue(2)
+
+        self.janela._executar()
+        self._aguardar_processo()
+
+        texto = self.janela.log.toPlainText()
+        self.assertIn("operacao-fake-ok", texto)
+        self.assertIn("--baixar", texto)
+        self.assertIn("--max-itens 2", texto)
+        self.assertIn("[Concluído]", texto)
+        self.assertTrue(self.janela.btn_executar.isEnabled())
+        self.assertFalse(self.janela.btn_cancelar.isEnabled())
+
+    def test_execucao_mantem_selecao_legivel_para_proxima_operacao(self) -> None:
+        indice = self.janela.operacao.findData("baixar")
+        self.janela.operacao.setCurrentIndex(indice)
+
+        self.janela._definir_execucao(True, "Executando")
+
+        self.assertTrue(self.janela.operacao.isEnabled())
+        self.assertTrue(self.janela.max_execucao.isEnabled())
+        self.assertFalse(self.janela.btn_executar.isEnabled())
+        self.assertTrue(self.janela.btn_cancelar.isEnabled())
+        grupo = gui.QtGui.QPalette.ColorGroup.Disabled
+        papel = gui.QtGui.QPalette.ColorRole
+        paleta = self.app.palette()
+        self.assertEqual(
+            paleta.color(grupo, papel.Text).name(),
+            gui.CORES["desabilitado_texto"],
+        )
+        self.assertEqual(
+            paleta.color(grupo, papel.Base).name(),
+            gui.CORES["desabilitado_fundo"],
+        )
+
+        self.janela._definir_execucao(False, "Pronto")
+
+    def test_cancela_operacao_em_andamento(self) -> None:
+        script = self.pasta / "cli_lenta.py"
+        script.write_text(
+            "import time\nprint('iniciada', flush=True)\ntime.sleep(10)\n",
+            encoding="utf-8",
+        )
+        gui.SCRIPT_CLI = script
+        self.janela._executar()
+        limite_inicio = time.monotonic() + 2
+        while (
+            self.janela.processo.state() == QtCore.QProcess.ProcessState.Starting
+            and time.monotonic() < limite_inicio
+        ):
+            self.app.processEvents()
+        self.assertTrue(self.janela.btn_cancelar.isEnabled())
+
+        self.janela._cancelar()
+        self._aguardar_processo(4)
+
+        self.assertEqual(
+            self.janela.processo.state(), QtCore.QProcess.ProcessState.NotRunning
+        )
+        self.assertTrue(self.janela.btn_executar.isEnabled())
+        self.assertFalse(self.janela.btn_cancelar.isEnabled())
