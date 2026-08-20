@@ -1,7 +1,6 @@
 pystac-client>=0.9,<1.0
-planetary-computer>=1.0,<2.0
+requests>=2.32,<3.0
 PyYAML>=6.0,<7.0
 numpy>=2.0,<3.0
-rasterio>=1.4,<2.0
 Pillow>=11.0,<13.0
 pyproj>=3.7,<4.0
