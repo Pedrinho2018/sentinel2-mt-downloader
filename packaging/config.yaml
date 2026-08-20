@@ -1,0 +1,42 @@
+stac:
+  url: "https://data.inpe.br/bdc/stac/v1/"
+  colecao: "S2-16D-2"
+
+area:
+  nome: "Mato Grosso"
+  uf: "MT"
+  bbox: [-61.65, -18.05, -50.20, -7.30]
+
+periodo:
+  inicio: "2025-09-01"
+  fim: "2026-04-30"
+
+bandas: ["B02", "B03", "B04", "B08", "NDVI"]
+
+qualidade:
+  filtrar_nuvens: true
+  nuvem_max_pct: 20
+  manter_scl: true
+
+preview:
+  gerar_rgb: true
+  tamanho_max_px: 1600
+  percentil_min: 2
+  percentil_max: 98
+  qualidade_jpeg: 92
+
+download:
+  pasta: "${HOME}/.local/share/sentinel2-mt/data"
+  catalogo: "${HOME}/.local/share/sentinel2-mt/catalogo_imagens.csv"
+  timeout_segundos: 120
+  chunk_mb: 1
+  max_itens_teste: 5
+  max_candidatos_teste: 40
+
+sincronizacao:
+  pasta_remota: "${PASTA_REMOTA:-sentinel2-mt}"
+  oauth_json: "${GOOGLE_OAUTH_JSON:-}"
+  token_json: "${HOME}/.config/sentinel2-mt/google-token.json"
+  pasta_id: "${GOOGLE_PASTA_ID:-root}"
+  tamanho_lote: 100
+  extensoes: [".tif", ".tiff", ".jpg", ".jpeg"]

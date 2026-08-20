@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Sentinel-2 MT Downloader
+Comment=Catálogo, download e sincronização de imagens Sentinel-2
+Exec=sentinel2-mt
+Terminal=true
+Categories=Science;Geography;

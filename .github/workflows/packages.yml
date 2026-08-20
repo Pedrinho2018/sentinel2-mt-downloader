@@ -1,0 +1,117 @@
+name: Pacotes Linux
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versão X.Y.Z para gerar artefatos sem publicar Release"
+        required: true
+        default: "2.0.0"
+
+permissions:
+  contents: write
+
+jobs:
+  packages:
+    name: Binário, DEB, RPM e Arch
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Baixar código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+
+      - name: Definir versão
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Versão inválida: $VERSION" >&2
+            exit 2
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Instalar dependências de build
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-build.txt
+          sudo apt-get update
+          sudo apt-get install --yes rpm
+
+      - name: Conferir versão do código
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          PYTHONPATH=src python - <<'PY'
+          import os
+          from sentinel2_mt import __version__
+
+          esperado = os.environ["PACKAGE_VERSION"]
+          if __version__ != esperado:
+              raise SystemExit(f"A tag pede {esperado}, mas o código declara {__version__}")
+          PY
+
+      - name: Executar testes
+        run: python -m unittest discover -v
+
+      - name: Gerar executável autocontido
+        run: python -m PyInstaller --noconfirm --clean packaging/sentinel2-mt.spec
+
+      - name: Validar executável
+        run: |
+          ./dist/sentinel2-mt --version
+          ./dist/sentinel2-mt --help
+
+      - name: Gerar DEB, RPM e PKGBUILD
+        run: packaging/build_linux_packages.sh "${{ steps.version.outputs.version }}"
+
+      - name: Gerar pacote Arch Linux
+        run: |
+          docker run --rm \
+            --volume "$PWD:/workspace" \
+            --workdir /workspace \
+            archlinux:base-devel \
+            bash packaging/build_arch_package.sh "${{ steps.version.outputs.version }}"
+
+      - name: Gerar checksums
+        run: |
+          cd release
+          sha256sum * > SHA256SUMS
+
+      - name: Armazenar artefatos do workflow
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentinel2-mt-${{ steps.version.outputs.version }}-linux
+          path: release/*
+          if-no-files-found: error
+
+      - name: Publicar GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" release/* \
+              --verify-tag \
+              --title "Sentinel-2 MT ${{ steps.version.outputs.version }}" \
+              --generate-notes
+          fi
