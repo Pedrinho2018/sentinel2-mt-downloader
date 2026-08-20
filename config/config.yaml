@@ -7,6 +7,7 @@ area:
   uf: "MT"
   bbox: [-61.65, -18.05, -50.20, -7.30]
 
+# Safra inicial usada no projeto. Pode ser sobrescrita por argumentos de linha de comando.
 periodo:
   inicio: "2025-09-01"
   fim: "2026-04-30"
@@ -18,42 +19,79 @@ bandas:
   - "B08"
   - "NDVI"
 
-# Filtro rigoroso no nível da cena. Cenas acima desse valor nunca entram
-# automaticamente no gerador de patches.
-qualidade:
-  filtrar_nuvens: true
-  nuvem_max_pct: 5
-
-preview:
-  gerar_rgb: true
-  tamanho_max_px: 1600
-  percentil_min: 2
-  percentil_max: 98
-  qualidade_jpeg: 94
-
+# Configurações compartilhadas de download.
 download:
   pasta: "data/sentinel2"
-  catalogo: "catalogo/catalogo_imagens.csv"
-  timeout_segundos: 120
-  chunk_mb: 1
-  max_itens_teste: 5
-  max_candidatos_teste: 120
+  timeout_segundos: 180
+  chunk_mb: 2
 
+# NOVO ESTÁGIO 1: coleta uma série temporal por tile e mês.
+# Uma cena individual NÃO precisa estar quase sem nuvens, porque ela será usada
+# como fonte para preencher pixels limpos no mosaico temporal.
+serie_temporal:
+  catalogo: "catalogo/catalogo_series.csv"
+  resumo: "catalogo/resumo_series.json"
+
+  # S2-16D geralmente oferece cerca de duas composições por mês.
+  cenas_por_tile_mes: 2
+
+  # Cenas muito ruins ainda são descartadas para não gastar armazenamento à toa.
+  nuvem_max_cena_pct: 60
+
+  # Teste inicial: um tile completo ao longo de toda a safra.
+  # Use 0 para todos os tiles encontrados.
+  max_tiles_teste: 1
+
+# NOVO ESTÁGIO 2: composição temporal mensal sem nuvens.
+mosaico:
+  origem_catalogo: "catalogo/catalogo_series.csv"
+  pasta: "data/mosaicos_temporais"
+  catalogo: "catalogo/catalogo_mosaicos.csv"
+  resumo: "catalogo/resumo_mosaicos.json"
+
+  # Mantém a dimensão temporal da safra: um mosaico por tile/mês.
+  agrupamento: "mensal"
+  min_cenas_grupo: 2
+
+  # Classes SCL aceitas como observação limpa.
+  # 2 = dark features, 4 = vegetation, 5 = bare/not vegetated, 6 = water.
+  classes_validas_scl: [2, 4, 5, 6]
+
+  # Classes tratadas como contaminação e dilatadas antes do best-pixel.
+  classes_ruins_scl: [3, 7, 8, 9, 10, 11]
+  margem_nuvem_px: 3
+
+  # Processamento em blocos para não estourar memória com GeoTIFFs grandes.
+  bloco_px: 1024
+
+  # A escolha do pixel prioriza a observação limpa mais próxima do centro do mês.
+  metodo: "primeiro_pixel_limpo_prioridade_centro_mes"
+
+  preview_max_px: 1800
+  percentil_min: 2
+  percentil_max: 98
+  qualidade_jpeg: 95
+
+# NOVO ESTÁGIO 3: catalogação feita somente em mosaicos temporais limpos.
 patches:
-  # 10 m/pixel -> 128 px ~= 1,28 km por lado.
+  origem: "data/mosaicos_temporais"
   tamanho_px: 128
   passo_px: 128
   preview_saida_px: 768
 
-  # Muito mais rígido que o filtro da cena.
-  nuvem_max_pct: 0.5
-  dados_validos_min_pct: 98
+  # Como o mosaico já remove nuvem, aqui filtramos cobertura válida residual.
+  dados_validos_min_pct: 99
 
-  # Dilata nuvem/sombra em 3 pixels para excluir também a borda contaminada.
-  # Em 10 m/pixel, representa ~30 m de margem de segurança.
-  margem_nuvem_px: 3
+  # Métrica de confiança: registra quantos pixels tinham 2+ observações limpas.
+  # Não é filtro obrigatório no primeiro teste; fica registrado no catálogo.
+  obs_2plus_min_pct: 0
 
   exportar_tifs: false
   pasta: "data/patches"
   catalogo: "catalogo/catalogo_patches.csv"
   resumo: "catalogo/resumo_patches.json"
+
+preview:
+  percentil_min: 2
+  percentil_max: 98
+  qualidade_jpeg: 95
