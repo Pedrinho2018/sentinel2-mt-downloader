@@ -1,168 +1,110 @@
 # Sentinel-2 MT Downloader
 
-Pipeline reproduzível de preparação de imagens Sentinel-2 para análise agrícola e catalogação de soja em Mato Grosso.
+Pipeline enxuto para gerar imagens limpas de Sentinel-2 voltadas à catalogação e futura classificação de soja em Mato Grosso.
 
-## Fonte correta
+## O que mudou
 
-O pipeline principal usa agora:
+O projeto **não baixa mais cenas completas** do Sentinel-2 para o computador.
 
-- INPE / Brazil Data Cube STAC
-- coleção `S2_L2A-1`
-- Sentinel-2 Level-2A Surface Reflectance
-- Cloud Optimized GeoTIFF (COG)
-- cenas reais disponibilizadas continuamente
+A fonte operacional passou a ser a coleção pública `sentinel-2-l2a` da Microsoft Planetary Computer. Os dados são Cloud Optimized GeoTIFF (COG), então o script lê apenas o pequeno recorte necessário de cada banda pela internet.
 
-O antigo `S2-16D-2` não é mais usado como fonte principal para remover nuvens. Ele já é uma composição de 16 dias e, em meses muito nublados, oferece poucas observações independentes.
-
-## Pipeline
+## Pipeline atual
 
 ```text
-S2_L2A-1
-   ↓
-cenas reais por MGRS tile + mês
-   ↓
-avalia até 10 candidatos/mês
-   ↓
-guarda até 6 fontes complementares/mês
-   ↓
-SCL 20 m -> grade 10 m (nearest)
-   ↓
-buffer de ~60 m em nuvem/sombra
-   ↓
-best-pixel limpo
-   ↓
-B02 + B03 + B04 + B08 da MESMA cena-fonte
-   ↓
-NDVI calculado pelo pipeline
-   ↓
-mosaico mensal
-   ↓
-VALID_MASK + OBS_COUNT + SOURCE_INDEX
-   ↓
-somente mosaico APROVADO
-   ↓
-patches 128x128
-   ↓
-preview 768x768
-   ↓
-LabelImage
+Planetary Computer STAC
+        ↓
+Sentinel-2 L2A
+        ↓
+busca por mês + AOI
+        ↓
+seleciona cenas com menor cobertura de nuvem
+        ↓
+para cada patch de 128x128 px (~1,28 km):
+  lê somente aquele recorte remoto
+        ↓
+SCL remove nuvem/sombra
+        ↓
+combina pixels limpos de várias datas
+        ↓
+exige >= 99,5% de cobertura limpa
+        ↓
+preview_rgb.jpg
+        ↓
+catalogo_soja.csv
+        ↓
+LabelImage / rotulagem
 ```
 
-## Bandas
+## Por que essa arquitetura
 
-Baixadas das cenas L2A:
+- não ocupa dezenas ou centenas de GB com cenas completas;
+- o filtro de nuvem é feito no **patch**, não pela porcentagem da cena inteira;
+- várias datas do mesmo mês podem preencher pixels nublados;
+- B02/B03/B04/B08 de um pixel vêm da mesma observação;
+- NDVI é calculado depois da composição;
+- cada patch registra os IDs das cenas usadas, permitindo reproduzir os dados.
 
-- `B02` azul - 10 m
-- `B03` verde - 10 m
-- `B04` vermelho - 10 m
-- `B08` infravermelho próximo - 10 m
-- `SCL` classificação da cena - 20 m
-
-Gerada pelo pipeline:
-
-- `NDVI`, calculado com B08 e B04 depois da composição
-
-## Controle de nuvens
-
-O SCL de 20 m é reprojetado para a mesma grade dos dados de 10 m por vizinho mais próximo.
-
-São rejeitados:
-
-- sombra de nuvem;
-- pixel não classificado/suspeito;
-- nuvem média;
-- nuvem alta;
-- cirrus;
-- neve/gelo.
-
-Depois é aplicado um buffer de aproximadamente 60 m ao redor da contaminação.
-
-## Coerência espectral
-
-Quando um pixel limpo é escolhido, `B02`, `B03`, `B04` e `B08` vêm todos da mesma passagem Sentinel-2. O pipeline não mistura bandas de datas diferentes no mesmo pixel.
-
-Também não escolhe o maior NDVI, evitando favorecer artificialmente vegetação mais verde.
-
-## Produtos do mosaico
+## Estrutura principal
 
 ```text
-data/mosaicos_temporais/<MGRS_TILE>/<AAAA-MM>/
-├── B02.tif
-├── B03.tif
-├── B04.tif
-├── B08.tif
-├── NDVI.tif
-├── VALID_MASK.tif
-├── OBS_COUNT.tif
-├── SOURCE_INDEX.tif
-├── preview_rgb.jpg
-└── metadata.json
+config/
+└── config.yaml
+
+src/
+├── gerar_dataset_soja.py   # script principal
+└── pipeline.py              # atalho para o script principal
+
+data/
+└── patches_soja/            # somente recortes aprovados
+
+catalogo/
+├── catalogo_soja.csv
+└── resumo_soja.json
 ```
 
-- `VALID_MASK`: pixels realmente preenchidos com observação limpa.
-- `OBS_COUNT`: número de observações limpas disponíveis para cada pixel.
-- `SOURCE_INDEX`: de qual cena real veio o pixel escolhido.
-- `metadata.json`: mapeia o índice para item STAC, data e qualidade.
+Os scripts antigos permanecem apenas como histórico de desenvolvimento e não fazem parte do fluxo principal.
 
-Mosaico com menos de 98% de cobertura válida recebe status `cobertura_insuficiente` e **não gera patches**.
-
-## Patches para LabelImage
-
-- 128x128 pixels Sentinel-2
-- aproximadamente 1,28 x 1,28 km
-- preview 768x768 por nearest-neighbor
-- pelo menos 99,5% de pixels válidos
-- pelo menos 20% do patch com duas ou mais observações limpas disponíveis
-
-## Teste
+## Instalação
 
 ```powershell
-git checkout feature/pipeline-premium
-git pull
+python -m venv .venv
+.venv\Scripts\activate
+python -m pip install --upgrade pip
 pip install -r requirements.txt
-python src\pipeline.py --max-tiles 1 --max-patches 20 --limpar
 ```
 
-No teste, o sistema usa um recorte pequeno no centro-norte de Mato Grosso e escolhe automaticamente o MGRS tile com melhor cobertura temporal.
+## Primeiro teste
 
-Primeiro confira os mosaicos:
-
-```text
-data/mosaicos_temporais/<TILE>/<AAAA-MM>/preview_rgb.jpg
-```
-
-Depois confira os patches:
-
-```text
-data/patches/<TILE>/<AAAA-MM>/<PATCH_ID>/preview_rgb.jpg
-```
-
-## Estrutura
-
-```text
-sentinel2-mt-downloader/
-├── config/
-│   └── config.yaml
-├── src/
-│   ├── baixar_series_temporais.py
-│   ├── gerar_mosaicos_temporais.py
-│   ├── gerar_patches.py
-│   ├── validar_dataset.py
-│   └── pipeline.py
-├── data/
-│   ├── sentinel2_l2a/
-│   ├── mosaicos_temporais/
-│   └── patches/
-├── catalogo/
-└── requirements.txt
-```
-
-## Escala futura
-
-Só depois da validação visual do tile de teste:
+Teste somente abril de 2026 e gere no máximo 5 patches:
 
 ```powershell
-python src\pipeline.py --max-tiles 0 --max-patches 0
+python src\pipeline.py --mes 2026-04 --max-patches 5 --limpar
 ```
 
-Não rode Mato Grosso inteiro antes de validar qualidade e armazenamento.
+Confira os arquivos:
+
+```text
+data/patches_soja/2026-04/.../preview_rgb.jpg
+```
+
+Se esses previews estiverem visualmente bons, aumente para 20:
+
+```powershell
+python src\pipeline.py --mes 2026-04 --max-patches 20 --limpar
+```
+
+Somente depois de validar a qualidade visual deve-se processar toda a safra:
+
+```powershell
+python src\pipeline.py --max-patches 20 --limpar
+```
+
+## Configuração
+
+O teste usa um recorte pequeno no centro-norte de Mato Grosso, em região agrícola. O AOI, período, limite de nuvem e tamanho de patch ficam em `config/config.yaml`.
+
+O padrão atual salva apenas `preview_rgb.jpg` e o catálogo para economizar espaço. Se futuramente for necessário armazenar os arrays científicos B02/B03/B04/B08/NDVI, altere `salvar_npz` para `true`.
+
+## Fonte
+
+Microsoft Planetary Computer — coleção `sentinel-2-l2a`.
