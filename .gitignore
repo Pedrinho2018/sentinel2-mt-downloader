@@ -1,0 +1,25 @@
+# Dados de satélite (arquivos grandes)
+data/
+*.tif
+*.tiff
+*.jp2
+*.zip
+
+# Ambientes Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Segredos e arquivos locais
+.env
+.env.*
+
+# IDE / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
