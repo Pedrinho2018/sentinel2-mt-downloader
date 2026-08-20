@@ -11,7 +11,6 @@ import numpy as np
 import rasterio
 import yaml
 from PIL import Image
-from rasterio.enums import Resampling
 from rasterio.windows import Window
 from rasterio.warp import transform, transform_bounds
 
@@ -37,8 +36,6 @@ def esticar(dados: np.ndarray, mascara: np.ndarray, pmin: float, pmax: float) ->
         return saida
     minimo, maximo = np.percentile(valores, [pmin, pmax])
     if not np.isfinite(minimo) or not np.isfinite(maximo) or maximo <= minimo:
-        minimo, maximo = float(valores.min()), float(valores.max())
-    if maximo <= minimo:
         return saida
     normalizado = np.clip((dados - minimo) / (maximo - minimo), 0, 1)
     saida = (normalizado * 255).astype(np.uint8)
@@ -57,35 +54,23 @@ def gerar_preview(
     qualidade: int,
     saida_px: int,
 ) -> None:
-    r = esticar(b04, mascara, pmin, pmax)
-    g = esticar(b03, mascara, pmin, pmax)
-    b = esticar(b02, mascara, pmin, pmax)
-    rgb = np.dstack((r, g, b))
+    rgb = np.dstack((
+        esticar(b04, mascara, pmin, pmax),
+        esticar(b03, mascara, pmin, pmax),
+        esticar(b02, mascara, pmin, pmax),
+    ))
     imagem = Image.fromarray(rgb, mode="RGB")
     if saida_px > 0 and imagem.size != (saida_px, saida_px):
         imagem = imagem.resize((saida_px, saida_px), resample=Image.Resampling.NEAREST)
     destino.parent.mkdir(parents=True, exist_ok=True)
-    imagem.save(
-        destino,
-        "JPEG",
-        quality=max(1, min(100, qualidade)),
-        optimize=True,
-    )
+    imagem.save(destino, "JPEG", quality=max(1, min(100, qualidade)), optimize=True)
 
 
-def bounds_wgs84(
-    src: rasterio.DatasetReader,
-    janela: Window,
-) -> tuple[float, float, float, float, float, float]:
+def bounds_wgs84(src, janela: Window):
     left, bottom, right, top = rasterio.windows.bounds(janela, src.transform)
     if src.crs:
         minlon, minlat, maxlon, maxlat = transform_bounds(
-            src.crs,
-            "EPSG:4326",
-            left,
-            bottom,
-            right,
-            top,
+            src.crs, "EPSG:4326", left, bottom, right, top
         )
         cx = (left + right) / 2
         cy = (bottom + top) / 2
@@ -94,11 +79,7 @@ def bounds_wgs84(
     return left, bottom, right, top, (left + right) / 2, (bottom + top) / 2
 
 
-def exportar_tif_patch(
-    src: rasterio.DatasetReader,
-    janela: Window,
-    destino: Path,
-) -> None:
+def exportar_tif_patch(src, janela: Window, destino: Path) -> None:
     dados = src.read(1, window=janela)
     perfil = src.profile.copy()
     perfil.update(
@@ -115,33 +96,30 @@ def exportar_tif_patch(
 
 
 def abrir_mosaico(pasta: Path):
-    caminhos: dict[str, Path] = {}
+    caminhos = {}
     for banda in BANDAS_OBRIGATORIAS:
         caminho = localizar_raster(pasta, banda)
         if caminho is None:
             return None, f"faltando_{banda}"
         caminhos[banda] = caminho
 
-    valid_mask = localizar_raster(pasta, "VALID_MASK")
-    obs_count = localizar_raster(pasta, "OBS_COUNT")
-    if valid_mask is None:
-        return None, "faltando_VALID_MASK"
-    if obs_count is None:
-        return None, "faltando_OBS_COUNT"
-    caminhos["VALID_MASK"] = valid_mask
-    caminhos["OBS_COUNT"] = obs_count
+    for nome in ("VALID_MASK", "OBS_COUNT", "SOURCE_INDEX"):
+        caminho = localizar_raster(pasta, nome)
+        if caminho is None:
+            return None, f"faltando_{nome}"
+        caminhos[nome] = caminho
     return caminhos, "ok"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Gera patches georreferenciados a partir de mosaicos temporais sem nuvens."
+        description="Gera patches de catalogação somente a partir de mosaicos L2A aprovados."
     )
     parser.add_argument("--config", type=Path, default=CONFIG_PADRAO)
     parser.add_argument("--max-patches", type=int, default=0, help="0 = sem limite")
-    parser.add_argument("--tile", help="Processa apenas um tile")
-    parser.add_argument("--mes", help="Processa apenas YYYY-MM")
-    parser.add_argument("--mosaico", help="Processa apenas um mosaic_id")
+    parser.add_argument("--tile")
+    parser.add_argument("--mes", help="YYYY-MM")
+    parser.add_argument("--mosaico")
     parser.add_argument("--limpar-saida", action="store_true")
     args = parser.parse_args()
 
@@ -152,8 +130,8 @@ def main() -> int:
     tamanho = int(pcfg.get("tamanho_px", 128))
     passo = int(pcfg.get("passo_px", tamanho))
     preview_saida_px = int(pcfg.get("preview_saida_px", 768))
-    valid_min = float(pcfg.get("dados_validos_min_pct", 99))
-    obs2_min = float(pcfg.get("obs_2plus_min_pct", 0))
+    valid_min = float(pcfg.get("dados_validos_min_pct", 99.5))
+    obs2_min = float(pcfg.get("obs_2plus_min_pct", 20))
     exportar_tifs = bool(pcfg.get("exportar_tifs", False))
     pmin = float(cfg.get("preview", {}).get("percentil_min", 2))
     pmax = float(cfg.get("preview", {}).get("percentil_max", 98))
@@ -167,13 +145,14 @@ def main() -> int:
     if not catalogo_mosaicos.exists():
         print(f"[ERRO] Catálogo de mosaicos não encontrado: {catalogo_mosaicos}")
         return 2
-
     if args.limpar_saida and destino_base.exists():
         shutil.rmtree(destino_base)
 
     with catalogo_mosaicos.open("r", encoding="utf-8-sig", newline="") as arquivo:
-        mosaicos = [r for r in csv.DictReader(arquivo) if r.get("status") == "gerado"]
+        todos = list(csv.DictReader(arquivo))
 
+    mosaicos = [r for r in todos if r.get("status") == "aprovado"]
+    rejeitados = len(todos) - len(mosaicos)
     if args.tile:
         mosaicos = [r for r in mosaicos if r.get("tile_id") == args.tile]
     if args.mes:
@@ -181,16 +160,16 @@ def main() -> int:
     if args.mosaico:
         mosaicos = [r for r in mosaicos if r.get("mosaic_id") == args.mosaico]
 
-    print("=" * 78)
-    print(" PATCHES PARA CATALOGAÇÃO | origem: mosaicos temporais limpos")
-    print("=" * 78)
-    print(f"Mosaicos disponíveis: {len(mosaicos)}")
-    print(f"Patch científico: {tamanho}x{tamanho} px (~{tamanho * 10 / 1000:.2f} km por lado)")
-    print(f"Preview visual: {preview_saida_px}x{preview_saida_px} px")
-    print(f"Dados válidos mínimos: {valid_min:.1f}%")
-    print(f"Pixels com 2+ observações mínimos: {obs2_min:.1f}%\n")
+    print("=" * 80)
+    print(" PATCHES PARA LABELIMAGE | somente mosaicos APROVADOS")
+    print("=" * 80)
+    print(f"Mosaicos aprovados disponíveis: {len(mosaicos)}")
+    print(f"Mosaicos rejeitados/ignorados: {rejeitados}")
+    print(f"Patch: {tamanho}x{tamanho}px (~{tamanho * 10 / 1000:.2f} km por lado)")
+    print(f"Dados válidos mínimos no patch: {valid_min:.1f}%")
+    print(f"Pixels com 2+ observações: mínimo {obs2_min:.1f}%\n")
 
-    registros: list[dict] = []
+    registros = []
     aprovados = descartados_validos = descartados_obs = mosaicos_ok = erros = 0
 
     for info in mosaicos:
@@ -212,7 +191,7 @@ def main() -> int:
                 for ds in datasets.values()
             )
             if not mesma_grade:
-                print(f"[PULA] {info['mosaic_id']}: rasters em grades incompatíveis")
+                print(f"[PULA] {info['mosaic_id']}: grades incompatíveis")
                 erros += 1
                 continue
 
@@ -225,14 +204,17 @@ def main() -> int:
                 for x in range(0, ref.width - tamanho + 1, passo):
                     janela = Window(x, y, tamanho, tamanho)
                     valid_mask = datasets["VALID_MASK"].read(1, window=janela) > 0
-                    obs_count = datasets["OBS_COUNT"].read(1, window=janela)
-
                     valid_pct = float(valid_mask.mean() * 100.0)
                     if valid_pct < valid_min:
                         descartados_validos += 1
                         continue
 
-                    obs2_pct = float(((obs_count >= 2) & valid_mask).sum() * 100.0 / max(int(valid_mask.sum()), 1))
+                    obs_count = datasets["OBS_COUNT"].read(1, window=janela)
+                    obs2_pct = float(
+                        ((obs_count >= 2) & valid_mask).sum()
+                        * 100.0
+                        / max(int(valid_mask.sum()), 1)
+                    )
                     if obs2_pct < obs2_min:
                         descartados_obs += 1
                         continue
@@ -246,58 +228,44 @@ def main() -> int:
                     b02 = datasets["B02"].read(1, window=janela).astype(np.float32)
                     b03 = datasets["B03"].read(1, window=janela).astype(np.float32)
                     b04 = datasets["B04"].read(1, window=janela).astype(np.float32)
-
                     gerar_preview(
-                        b04,
-                        b03,
-                        b02,
-                        valid_mask,
-                        preview,
-                        pmin,
-                        pmax,
-                        qualidade_jpeg,
-                        preview_saida_px,
+                        b04, b03, b02, valid_mask, preview,
+                        pmin, pmax, qualidade_jpeg, preview_saida_px
                     )
 
                     if exportar_tifs:
-                        for nome in [*BANDAS_OBRIGATORIAS, "VALID_MASK", "OBS_COUNT"]:
+                        for nome in [*BANDAS_OBRIGATORIAS, "VALID_MASK", "OBS_COUNT", "SOURCE_INDEX"]:
                             exportar_tif_patch(
-                                datasets[nome],
-                                janela,
-                                pasta_patch / f"{nome}.tif",
+                                datasets[nome], janela, pasta_patch / f"{nome}.tif"
                             )
 
                     minlon, minlat, maxlon, maxlat, lon, lat = bounds_wgs84(ref, janela)
-                    registros.append(
-                        {
-                            "patch_id": patch_id,
-                            "mosaic_id": mosaic_id,
-                            "tile_id": tile_id,
-                            "mes": mes,
-                            "row": row,
-                            "col": col,
-                            "xoff": x,
-                            "yoff": y,
-                            "width": tamanho,
-                            "height": tamanho,
-                            "lado_km_aproximado": round(tamanho * 10 / 1000, 3),
-                            "valid_data_pct": round(valid_pct, 4),
-                            "obs_2plus_pct": round(obs2_pct, 4),
-                            "minlon": round(minlon, 7),
-                            "minlat": round(minlat, 7),
-                            "maxlon": round(maxlon, 7),
-                            "maxlat": round(maxlat, 7),
-                            "centroid_lon": round(lon, 7),
-                            "centroid_lat": round(lat, 7),
-                            "preview": str(preview.relative_to(ROOT)),
-                            "label": "",
-                            "observacao": "",
-                        }
-                    )
+                    registros.append({
+                        "patch_id": patch_id,
+                        "mosaic_id": mosaic_id,
+                        "tile_id": tile_id,
+                        "mes": mes,
+                        "row": row,
+                        "col": col,
+                        "xoff": x,
+                        "yoff": y,
+                        "width": tamanho,
+                        "height": tamanho,
+                        "lado_km_aproximado": round(tamanho * 10 / 1000, 3),
+                        "valid_data_pct": round(valid_pct, 4),
+                        "obs_2plus_pct": round(obs2_pct, 4),
+                        "minlon": round(minlon, 7),
+                        "minlat": round(minlat, 7),
+                        "maxlon": round(maxlon, 7),
+                        "maxlat": round(maxlat, 7),
+                        "centroid_lon": round(lon, 7),
+                        "centroid_lat": round(lat, 7),
+                        "preview": str(preview.relative_to(ROOT)),
+                        "label": "",
+                        "observacao": "",
+                    })
                     aprovados += 1
-                    print(
-                        f"[OK] {patch_id} | válidos={valid_pct:.1f}% | 2+obs={obs2_pct:.1f}%"
-                    )
+                    print(f"[OK] {patch_id} | válidos={valid_pct:.1f}% | 2+obs={obs2_pct:.1f}%")
 
                     if args.max_patches > 0 and aprovados >= args.max_patches:
                         break
@@ -309,31 +277,13 @@ def main() -> int:
             for ds in datasets.values():
                 ds.close()
 
-    catalogo.parent.mkdir(parents=True, exist_ok=True)
     campos = [
-        "patch_id",
-        "mosaic_id",
-        "tile_id",
-        "mes",
-        "row",
-        "col",
-        "xoff",
-        "yoff",
-        "width",
-        "height",
-        "lado_km_aproximado",
-        "valid_data_pct",
-        "obs_2plus_pct",
-        "minlon",
-        "minlat",
-        "maxlon",
-        "maxlat",
-        "centroid_lon",
-        "centroid_lat",
-        "preview",
-        "label",
-        "observacao",
+        "patch_id", "mosaic_id", "tile_id", "mes", "row", "col", "xoff", "yoff",
+        "width", "height", "lado_km_aproximado", "valid_data_pct", "obs_2plus_pct",
+        "minlon", "minlat", "maxlon", "maxlat", "centroid_lon", "centroid_lat",
+        "preview", "label", "observacao"
     ]
+    catalogo.parent.mkdir(parents=True, exist_ok=True)
     with catalogo.open("w", newline="", encoding="utf-8-sig") as arquivo:
         writer = csv.DictWriter(arquivo, fieldnames=campos)
         writer.writeheader()
@@ -341,24 +291,19 @@ def main() -> int:
 
     resumo = {
         "gerado_em_utc": datetime.now(timezone.utc).isoformat(),
-        "origem": "mosaicos_temporais",
-        "tamanho_patch_px": tamanho,
-        "passo_px": passo,
-        "preview_saida_px": preview_saida_px,
-        "lado_patch_km_aproximado": round(tamanho * 10 / 1000, 3),
-        "dados_validos_min_pct": valid_min,
-        "obs_2plus_min_pct": obs2_min,
-        "mosaicos_processados": mosaicos_ok,
+        "mosaicos_aprovados_processados": mosaicos_ok,
         "patches_aprovados": aprovados,
         "patches_descartados_dados_invalidos": descartados_validos,
         "patches_descartados_obs_insuficientes": descartados_obs,
-        "exportou_tifs": exportar_tifs,
+        "tamanho_patch_px": tamanho,
+        "preview_saida_px": preview_saida_px,
+        "dados_validos_min_pct": valid_min,
+        "obs_2plus_min_pct": obs2_min,
         "erros": erros,
         "catalogo": str(catalogo.relative_to(ROOT)),
     }
     resumo_path.parent.mkdir(parents=True, exist_ok=True)
     resumo_path.write_text(json.dumps(resumo, ensure_ascii=False, indent=2), encoding="utf-8")
-
     print("\n=== RESUMO ===")
     print(json.dumps(resumo, ensure_ascii=False, indent=2))
     return 0 if erros == 0 else 1
