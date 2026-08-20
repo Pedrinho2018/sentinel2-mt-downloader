@@ -71,7 +71,9 @@ class SincronizadorGoogleDrive:
             raise FileNotFoundError(f"Pasta de imagens não encontrada: {pasta_local}")
 
         sync = self.config.sincronizacao
-        lote = tamanho_lote or sync.tamanho_lote
+        lote = sync.tamanho_lote if tamanho_lote is None else tamanho_lote
+        if lote <= 0:
+            raise ValueError("O tamanho do lote deve ser maior que zero.")
         arquivos = self.arquivos_para_sincronizar(pasta_local, sync.extensoes)
         if not arquivos:
             self.saida("[SINCRONIZAÇÃO] Nenhuma imagem encontrada para sincronizar.")
