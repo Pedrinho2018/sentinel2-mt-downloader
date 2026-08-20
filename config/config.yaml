@@ -5,15 +5,12 @@ stac:
 area:
   nome: "Mato Grosso"
   uf: "MT"
-  # Busca inicial por bounding box. O catálogo de patches preserva as coordenadas
-  # de cada recorte para posterior cruzamento com limites oficiais e dados agrícolas.
   bbox: [-61.65, -18.05, -50.20, -7.30]
 
 periodo:
   inicio: "2025-09-01"
   fim: "2026-04-30"
 
-# Bandas científicas usadas no projeto de vigor vegetativo/soja.
 bandas:
   - "B02"
   - "B03"
@@ -21,11 +18,11 @@ bandas:
   - "B08"
   - "NDVI"
 
-# Filtro da cena antes do download das bandas grandes.
+# Filtro rigoroso no nível da cena. Cenas acima desse valor nunca entram
+# automaticamente no gerador de patches.
 qualidade:
   filtrar_nuvens: true
-  nuvem_max_pct: 20
-  manter_scl: true
+  nuvem_max_pct: 5
 
 preview:
   gerar_rgb: true
@@ -40,27 +37,23 @@ download:
   timeout_segundos: 120
   chunk_mb: 1
   max_itens_teste: 5
-  max_candidatos_teste: 40
+  max_candidatos_teste: 120
 
-# Segunda etapa: transforma cenas grandes em unidades adequadas para catalogação.
 patches:
-  # Sentinel-2 a 10 m: 128 px ~= 1,28 km por lado.
-  # Mantém contexto suficiente do talhão, mas aproxima bastante a inspeção visual.
+  # 10 m/pixel -> 128 px ~= 1,28 km por lado.
   tamanho_px: 128
   passo_px: 128
-
-  # A imagem científica continua 128x128. Apenas o JPG de visualização é ampliado
-  # para facilitar a catalogação no LabelImage, sem criar informação nova.
   preview_saida_px: 768
 
-  # Filtro por patch mais rígido que o filtro da cena.
-  nuvem_max_pct: 8
-  dados_validos_min_pct: 90
+  # Muito mais rígido que o filtro da cena.
+  nuvem_max_pct: 0.5
+  dados_validos_min_pct: 98
 
-  # Para evitar multiplicar o armazenamento, por padrão exportamos apenas o JPG
-  # para rotulagem. O CSV guarda janela/coordenadas para recuperar as bandas originais.
+  # Dilata nuvem/sombra em 3 pixels para excluir também a borda contaminada.
+  # Em 10 m/pixel, representa ~30 m de margem de segurança.
+  margem_nuvem_px: 3
+
   exportar_tifs: false
-
   pasta: "data/patches"
   catalogo: "catalogo/catalogo_patches.csv"
   resumo: "catalogo/resumo_patches.json"
