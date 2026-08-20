@@ -5,6 +5,7 @@ import csv
 import json
 import shutil
 from collections import defaultdict
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -124,7 +125,12 @@ def gerar_preview_rgb(
     if any(c is None for c in caminhos.values()) or mask_path is None:
         raise FileNotFoundError("Bandas RGB ou VALID_MASK não encontrados no mosaico.")
 
-    with rasterio.open(caminhos["B04"]) as src_r, rasterio.open(caminhos["B03"]) as src_g, rasterio.open(caminhos["B02"]) as src_b, rasterio.open(mask_path) as src_m:
+    with (
+        rasterio.open(caminhos["B04"]) as src_r,
+        rasterio.open(caminhos["B03"]) as src_g,
+        rasterio.open(caminhos["B02"]) as src_b,
+        rasterio.open(mask_path) as src_m,
+    ):
         escala = min(1.0, max_px / max(src_r.width, src_r.height))
         largura = max(1, int(src_r.width * escala))
         altura = max(1, int(src_r.height * escala))
@@ -152,9 +158,7 @@ def gerar_preview_rgb(
 
 def prioridade_centro_mes(registro: dict) -> tuple[int, float, str]:
     data = datetime.fromisoformat(registro["data"])
-    distancia = abs(data.day - 15)
-    nuvem = float(registro["nuvem_pct"])
-    return distancia, nuvem, registro["data"]
+    return abs(data.day - 15), float(registro["nuvem_pct"]), registro["data"]
 
 
 def abrir_fontes(registros: list[dict], bandas: list[str]) -> list[dict]:
@@ -257,7 +261,7 @@ def main() -> int:
     print(f"Método: {metodo}\n")
 
     registros_saida: list[dict] = []
-    grupos_ok = grupos_pulados = erros = 0
+    grupos_ok = grupos_pulados = avisos = 0
 
     for numero, ((tile_id, mes), registros) in enumerate(sorted(grupos.items()), start=1):
         if args.max_grupos > 0 and grupos_ok >= args.max_grupos:
@@ -309,103 +313,120 @@ def main() -> int:
             mosaic_id = f"{tile_id}_{mes}"
             destino = pasta_saida / tile_id / mes
             destino.mkdir(parents=True, exist_ok=True)
-
-            writers = {}
-            nodatas = {}
-            for banda in bandas:
-                src = fontes[0]["datasets"][banda]
-                perfil = src.profile.copy()
-                nodata = src.nodata
-                if nodata is None:
-                    nodata = 0
-                nodatas[banda] = nodata
-                perfil.update(
-                    compress="deflate",
-                    tiled=True,
-                    nodata=nodata,
-                    count=1,
-                )
-                writers[banda] = rasterio.open(destino / f"{banda}.tif", "w", **perfil)
-
-            perfil_mask = ref.profile.copy()
-            perfil_mask.update(dtype="uint8", nodata=0, count=1, compress="deflate", tiled=True)
-            writer_valid = rasterio.open(destino / "VALID_MASK.tif", "w", **perfil_mask)
-            writer_obs = rasterio.open(destino / "OBS_COUNT.tif", "w", **perfil_mask)
-
-            perfil_source = ref.profile.copy()
-            perfil_source.update(dtype="uint16", nodata=0, count=1, compress="deflate", tiled=True)
-            writer_source = rasterio.open(destino / "SOURCE_INDEX.tif", "w", **perfil_source)
-
             total_pixels = ref.width * ref.height
             total_validos = 0
             total_obs2 = 0
 
-            for janela in iterar_janelas(ref.width, ref.height, bloco):
-                h = int(janela.height)
-                w = int(janela.width)
-                mascaras_limpas: list[np.ndarray] = []
-                obs_count = np.zeros((h, w), dtype=np.uint8)
-
-                for fonte in fontes:
-                    limpa = mascara_limpa_janela(
-                        fonte["datasets"]["SCL"],
-                        janela,
-                        classes_validas,
-                        classes_ruins,
-                        margem,
-                    )
-                    mascaras_limpas.append(limpa)
-                    obs_count = np.minimum(obs_count.astype(np.uint16) + limpa.astype(np.uint16), 255).astype(np.uint8)
-
-                preenchido = np.zeros((h, w), dtype=bool)
-                source_index = np.zeros((h, w), dtype=np.uint16)
-                saidas = {
-                    banda: np.full(
-                        (h, w),
-                        nodatas[banda],
-                        dtype=np.dtype(fontes[0]["datasets"][banda].dtypes[0]),
-                    )
-                    for banda in bandas
-                }
-
-                for indice, fonte in enumerate(fontes, start=1):
-                    candidato = mascaras_limpas[indice - 1] & ~preenchido
-                    if not candidato.any():
-                        continue
-
-                    dados_cena = {}
-                    valores_ok = candidato.copy()
-                    for banda in bandas:
-                        ds = fonte["datasets"][banda]
-                        dados = ds.read(1, window=janela)
-                        dados_cena[banda] = dados
-                        valores_ok &= valor_valido(dados, ds.nodata)
-
-                    if not valores_ok.any():
-                        continue
-
-                    for banda in bandas:
-                        saidas[banda][valores_ok] = dados_cena[banda][valores_ok]
-                    source_index[valores_ok] = indice
-                    preenchido[valores_ok] = True
+            with ExitStack() as stack:
+                writers = {}
+                nodatas = {}
+                dtypes = {}
 
                 for banda in bandas:
-                    writers[banda].write(saidas[banda], 1, window=janela)
-                writer_valid.write(preenchido.astype(np.uint8), 1, window=janela)
-                writer_obs.write(obs_count, 1, window=janela)
-                writer_source.write(source_index, 1, window=janela)
+                    src = fontes[0]["datasets"][banda]
+                    perfil = src.profile.copy()
+                    nodata = src.nodata if src.nodata is not None else 0
+                    nodatas[banda] = nodata
+                    dtypes[banda] = np.dtype(src.dtypes[0])
+                    perfil.update(
+                        compress="deflate",
+                        tiled=True,
+                        nodata=nodata,
+                        count=1,
+                    )
+                    writers[banda] = stack.enter_context(
+                        rasterio.open(destino / f"{banda}.tif", "w", **perfil)
+                    )
 
-                total_validos += int(preenchido.sum())
-                total_obs2 += int((obs_count >= 2).sum())
+                perfil_mask = ref.profile.copy()
+                perfil_mask.update(
+                    dtype="uint8",
+                    nodata=0,
+                    count=1,
+                    compress="deflate",
+                    tiled=True,
+                )
+                writer_valid = stack.enter_context(
+                    rasterio.open(destino / "VALID_MASK.tif", "w", **perfil_mask)
+                )
+                writer_obs = stack.enter_context(
+                    rasterio.open(destino / "OBS_COUNT.tif", "w", **perfil_mask)
+                )
 
-            for writer in writers.values():
-                writer.close()
-            writer_valid.close()
-            writer_obs.close()
-            writer_source.close()
+                perfil_source = ref.profile.copy()
+                perfil_source.update(
+                    dtype="uint16",
+                    nodata=0,
+                    count=1,
+                    compress="deflate",
+                    tiled=True,
+                )
+                writer_source = stack.enter_context(
+                    rasterio.open(destino / "SOURCE_INDEX.tif", "w", **perfil_source)
+                )
+
+                for janela in iterar_janelas(ref.width, ref.height, bloco):
+                    h = int(janela.height)
+                    w = int(janela.width)
+                    obs_count = np.zeros((h, w), dtype=np.uint8)
+                    cenas_dados: list[dict[str, np.ndarray]] = []
+                    cenas_validas: list[np.ndarray] = []
+
+                    # Cada observação só conta se SCL e TODAS as bandas necessárias forem válidas.
+                    for fonte in fontes:
+                        limpa = mascara_limpa_janela(
+                            fonte["datasets"]["SCL"],
+                            janela,
+                            classes_validas,
+                            classes_ruins,
+                            margem,
+                        )
+                        dados_cena: dict[str, np.ndarray] = {}
+                        valida = limpa.copy()
+                        for banda in bandas:
+                            ds = fonte["datasets"][banda]
+                            dados = ds.read(1, window=janela)
+                            dados_cena[banda] = dados
+                            valida &= valor_valido(dados, ds.nodata)
+                        cenas_dados.append(dados_cena)
+                        cenas_validas.append(valida)
+                        obs_count = np.minimum(
+                            obs_count.astype(np.uint16) + valida.astype(np.uint16),
+                            255,
+                        ).astype(np.uint8)
+
+                    preenchido = np.zeros((h, w), dtype=bool)
+                    source_index = np.zeros((h, w), dtype=np.uint16)
+                    saidas = {
+                        banda: np.full((h, w), nodatas[banda], dtype=dtypes[banda])
+                        for banda in bandas
+                    }
+
+                    # Fontes já estão ordenadas pela proximidade do centro do mês.
+                    # Uma vez escolhido um pixel, TODAS as bandas vêm da mesma cena.
+                    for indice, (dados_cena, valida) in enumerate(
+                        zip(cenas_dados, cenas_validas),
+                        start=1,
+                    ):
+                        usar = valida & ~preenchido
+                        if not usar.any():
+                            continue
+                        for banda in bandas:
+                            saidas[banda][usar] = dados_cena[banda][usar]
+                        source_index[usar] = indice
+                        preenchido[usar] = True
+
+                    for banda in bandas:
+                        writers[banda].write(saidas[banda], 1, window=janela)
+                    writer_valid.write(preenchido.astype(np.uint8), 1, window=janela)
+                    writer_obs.write(obs_count, 1, window=janela)
+                    writer_source.write(source_index, 1, window=janela)
+
+                    total_validos += int(preenchido.sum())
+                    total_obs2 += int(((obs_count >= 2) & preenchido).sum())
 
             valid_pct = total_validos * 100.0 / max(total_pixels, 1)
-            obs2_pct = total_obs2 * 100.0 / max(total_pixels, 1)
+            obs2_pct = total_obs2 * 100.0 / max(total_validos, 1)
 
             preview = destino / "preview_rgb.jpg"
             gerar_preview_rgb(
@@ -435,11 +456,12 @@ def main() -> int:
                 "tile_id": tile_id,
                 "mes": mes,
                 "metodo": metodo,
+                "regra_espectral": "todas_as_bandas_do_pixel_vem_da_mesma_cena",
                 "classes_validas_scl": sorted(classes_validas),
                 "classes_ruins_scl": sorted(classes_ruins),
                 "margem_nuvem_px": margem,
                 "valid_coverage_pct": round(valid_pct, 4),
-                "obs_2plus_pct": round(obs2_pct, 4),
+                "obs_2plus_pct_sobre_pixels_validos": round(obs2_pct, 4),
                 "fontes": fontes_meta,
                 "gerado_em_utc": datetime.now(timezone.utc).isoformat(),
             }
@@ -449,7 +471,10 @@ def main() -> int:
             )
 
             grupos_ok += 1
-            print(f"  [OK] cobertura válida={valid_pct:.2f}% | pixels com 2+ obs={obs2_pct:.2f}%")
+            print(
+                f"  [OK] cobertura válida={valid_pct:.2f}% | "
+                f"pixels válidos com 2+ obs={obs2_pct:.2f}%"
+            )
             registros_saida.append(
                 {
                     "mosaic_id": mosaic_id,
@@ -465,8 +490,8 @@ def main() -> int:
                 }
             )
         except Exception as exc:
-            erros += 1
-            print(f"  [ERRO] {exc}")
+            avisos += 1
+            print(f"  [AVISO] mosaico não gerado: {exc}")
             registros_saida.append(
                 {
                     "mosaic_id": f"{tile_id}_{mes}",
@@ -507,16 +532,22 @@ def main() -> int:
         "grupos_disponiveis": len(grupos),
         "mosaicos_gerados": grupos_ok,
         "grupos_pulados": grupos_pulados,
-        "erros": erros,
+        "avisos": avisos,
         "metodo": metodo,
         "catalogo": str(catalogo_saida.relative_to(ROOT)),
     }
     resumo_path.parent.mkdir(parents=True, exist_ok=True)
-    resumo_path.write_text(json.dumps(resumo, ensure_ascii=False, indent=2), encoding="utf-8")
+    resumo_path.write_text(
+        json.dumps(resumo, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
     print("\n=== RESUMO ===")
     print(json.dumps(resumo, ensure_ascii=False, indent=2))
-    return 0 if erros == 0 else 1
+    if grupos_ok == 0:
+        print("[ERRO] Nenhum mosaico foi gerado.")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
