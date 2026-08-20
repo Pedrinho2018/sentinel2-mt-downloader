@@ -105,7 +105,11 @@ class TestLotesGoogleDrive(TestCase):
         credenciais = AutenticadorGoogleDrive._autorizar_no_navegador(fluxo)
 
         self.assertEqual(credenciais, "credenciais-fake")
-        self.assertEqual(fluxo.parametros, {"port": 0, "prompt": "select_account"})
+        self.assertEqual(fluxo.parametros["host"], "127.0.0.1")
+        self.assertEqual(fluxo.parametros["bind_addr"], "127.0.0.1")
+        self.assertEqual(fluxo.parametros["port"], 0)
+        self.assertEqual(fluxo.parametros["prompt"], "select_account")
+        self.assertIn("Autorização concluída", fluxo.parametros["success_message"])
 
     def test_divide_sem_perder_ordem(self) -> None:
         lotes = [list(lote) for lote in dividir_em_lotes([1, 2, 3, 4, 5], 2)]
