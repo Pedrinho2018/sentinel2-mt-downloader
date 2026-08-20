@@ -1,15 +1,18 @@
 # Sentinel-2 MT Downloader
 
-Pipeline de coleta e preparação de imagens Sentinel-2 para análise agrícola no estado de Mato Grosso (MT), usando a API STAC do INPE/Brazil Data Cube.
+Pipeline reproduzível de preparação de imagens Sentinel-2 para análise agrícola em Mato Grosso, usando a API STAC do INPE/Brazil Data Cube.
 
 ## Objetivo
 
-Preparar um dataset reproduzível para análise de áreas agrícolas e vigor da vegetação ao longo da safra, com foco posterior em soja.
+Preparar dados para análise de áreas agrícolas e vigor da vegetação ao longo da safra, com foco posterior em soja.
 
-O pipeline separa duas etapas:
+O projeto não usa mais uma cena isolada como unidade final de catalogação. A estratégia atual é:
 
-1. **Cena-mãe**: download das bandas científicas e controle de qualidade.
-2. **Patch de catalogação**: recorte pequeno, georreferenciado e adequado para rotulagem no LabelImage.
+1. coletar **séries temporais por tile e mês**;
+2. combinar observações complementares;
+3. gerar **mosaicos mensais sem nuvens por best-pixel**;
+4. recortar os mosaicos em patches georreferenciados;
+5. auditar o dataset antes da rotulagem no LabelImage.
 
 ## Fonte de dados
 
@@ -18,7 +21,7 @@ O pipeline separa duas etapas:
 - Coleção: `S2-16D-2`
 - Sentinel-2 MSI Level-2A
 - Resolução espacial principal: 10 m
-- Composição temporal: 16 dias
+- Composição temporal de origem: 16 dias
 
 ## Bandas utilizadas
 
@@ -27,57 +30,103 @@ O pipeline separa duas etapas:
 - `B04` = vermelho
 - `B08` = infravermelho próximo
 - `NDVI` = índice de vegetação
-- `SCL` = classificação de cena usada no filtro de nuvem/sombra
+- `SCL` = classificação de cena usada para rejeitar nuvens/sombras pixel a pixel
 
-## Fluxo
+## Arquitetura atual
 
 ```text
 INPE / Sentinel-2
         ↓
-Busca em Mato Grosso
+Catálogo STAC
         ↓
-Filtro de nuvem/sombra da cena via SCL
+Agrupamento por TILE + MÊS
         ↓
-B02 + B03 + B04 + B08 + NDVI
+2 cenas-fonte por tile/mês
         ↓
-Cena-mãe
+SCL de cada fonte
         ↓
-Patches 128x128 px (~1,28 km por lado)
+┌────────────────────────────────────────────┐
+│ MOSAICO TEMPORAL MENSAL                   │
+│                                            │
+│ Para cada pixel:                           │
+│ - descarta nuvem/sombra/cirrus             │
+│ - aplica margem de segurança               │
+│ - escolhe observação limpa mais próxima    │
+│   do centro do mês                         │
+│ - mantém todas as bandas da MESMA fonte    │
+└────────────────────────────────────────────┘
         ↓
-Filtro de qualidade por patch
-  - nuvem/sombra <= 8%
-  - dados válidos >= 90%
+B02 / B03 / B04 / B08 / NDVI
+VALID_MASK / OBS_COUNT / SOURCE_INDEX
         ↓
-Preview RGB 768x768 px
+Mosaico mensal limpo e rastreável
+        ↓
+Patches 128x128 px (~1,28 km)
+        ↓
+Preview 768x768 para catalogação
         ↓
 Catálogo CSV georreferenciado
         ↓
-LabelImage / etapa de rotulagem
+Auditoria
+        ↓
+LabelImage / rotulagem
 ```
 
-## Por que o preview é 768x768?
+## Por que mudar para mosaico temporal?
 
-O dado científico continua sendo um recorte de **128x128 pixels Sentinel-2**. O JPG é ampliado para `768x768` apenas para facilitar a inspeção visual e a catalogação.
+Uma cena com poucos por cento de nuvem ainda pode apresentar milhares de pequenas nuvens espalhadas. Para agricultura isso atrapalha a inspeção visual e pode contaminar o treinamento.
 
-A ampliação usa `NEAREST`, preservando os pixels originais e evitando criar falsa sensação de resolução espacial adicional.
+O mosaico temporal resolve isso usando **datas complementares do mesmo tile**. Quando uma data está nublada em um pixel, o pipeline tenta preencher aquele local com uma observação limpa de outra data do mesmo mês.
 
-## Estrutura
+Importante: o algoritmo não escolhe o maior NDVI nem o pixel "mais verde", porque isso enviesaria a análise de vigor. A prioridade é a observação limpa mais próxima do centro do mês, preservando coerência temporal e espectral.
+
+## Produtos do mosaico
+
+Cada `tile/mês` gera:
+
+```text
+data/mosaicos_temporais/TILE/YYYY-MM/
+├── B02.tif
+├── B03.tif
+├── B04.tif
+├── B08.tif
+├── NDVI.tif
+├── VALID_MASK.tif
+├── OBS_COUNT.tif
+├── SOURCE_INDEX.tif
+├── preview_rgb.jpg
+└── metadata.json
+```
+
+- `VALID_MASK`: pixels que receberam uma observação limpa.
+- `OBS_COUNT`: quantidade de observações limpas disponíveis para cada pixel.
+- `SOURCE_INDEX`: identifica qual cena forneceu o pixel usado no mosaico.
+- `metadata.json`: mapeia cada índice para a cena/data original.
+
+Isso permite rastrear qualquer pixel de volta à fonte.
+
+## Estrutura do repositório
 
 ```text
 sentinel2-mt-downloader/
 ├── config/
 │   └── config.yaml
-├── data/
-│   ├── sentinel2/          # cenas-mãe; ignoradas pelo Git
-│   └── patches/            # previews dos patches; ignorados pelo Git
+├── data/                         # ignorado pelo Git
+│   ├── sentinel2/
+│   ├── mosaicos_temporais/
+│   └── patches/
 ├── catalogo/
-│   ├── catalogo_imagens.csv
+│   ├── catalogo_series.csv
+│   ├── catalogo_mosaicos.csv
 │   ├── catalogo_patches.csv
-│   └── resumo_patches.json
+│   └── relatorio_validacao.json
 ├── src/
-│   ├── baixar_inpe_mt.py
+│   ├── baixar_series_temporais.py
+│   ├── gerar_mosaicos_temporais.py
 │   ├── gerar_patches.py
-│   └── validar_dataset.py
+│   ├── validar_dataset.py
+│   ├── pipeline.py
+│   └── baixar_inpe_mt.py        # downloader antigo/auxiliar
 ├── requirements.txt
 └── README.md
 ```
@@ -91,52 +140,92 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-## 1. Baixar cenas boas
+## Teste recomendado
 
-Teste com uma cena nova:
-
-```powershell
-python src\baixar_inpe_mt.py --baixar --max-itens 1
-```
-
-Baixar cinco cenas novas aprovadas:
+Primeiro atualize a branch:
 
 ```powershell
-python src\baixar_inpe_mt.py --baixar --max-itens 5
+git pull
 ```
 
-O downloader pula cenas completas que já existem no disco e continua procurando até atingir a meta de novas cenas.
-
-## 2. Gerar patches próximos
-
-Teste primeiro com 20 patches:
+Depois execute o pipeline completo em **um tile** e limite o resultado a 20 patches:
 
 ```powershell
-python src\gerar_patches.py --max-patches 20
+python src\pipeline.py --max-tiles 1 --max-patches 20 --limpar
 ```
 
-Cada patch aprovado gera um `preview_rgb.jpg` e uma linha no `catalogo/catalogo_patches.csv` contendo:
+O processo executa automaticamente:
 
-- ID do patch e da cena;
-- data;
-- linha/coluna e offsets do raster original;
-- tamanho do patch;
-- área aproximada no terreno;
-- percentual de nuvem/sombra;
-- percentual de dados válidos;
-- bounding box WGS84;
-- coordenada central;
-- caminho do preview;
-- campos `label` e `observacao`.
+```text
+baixar_series_temporais.py
+        ↓
+gerar_mosaicos_temporais.py
+        ↓
+gerar_patches.py
+        ↓
+validar_dataset.py
+```
 
-## 3. Validar o dataset
+## Executar por etapas
+
+### 1. Coletar a série temporal
+
+```powershell
+python src\baixar_series_temporais.py --max-tiles 1 --cenas-por-mes 2
+```
+
+Para um tile específico:
+
+```powershell
+python src\baixar_series_temporais.py --tile 014018 --max-tiles 1 --cenas-por-mes 2
+```
+
+### 2. Gerar mosaicos mensais
+
+```powershell
+python src\gerar_mosaicos_temporais.py --limpar-saida
+```
+
+### 3. Gerar 20 patches de teste
+
+```powershell
+python src\gerar_patches.py --max-patches 20 --limpar-saida
+```
+
+### 4. Auditar
 
 ```powershell
 python src\validar_dataset.py
 ```
 
-A validação ajuda a detectar inconsistências antes da etapa de rotulagem ou treinamento.
+## Catálogo dos patches
 
-## Importante
+Cada patch registra:
 
-Os GeoTIFFs e previews não são enviados ao GitHub. O repositório mantém código, configuração e catálogos para que o dataset possa ser reproduzido sem usar o GitHub como armazenamento de imagens de satélite.
+- `patch_id`;
+- `mosaic_id`;
+- tile;
+- mês da safra;
+- offsets no mosaico;
+- tamanho;
+- percentual de dados válidos;
+- percentual de pixels com duas ou mais observações limpas;
+- bounding box WGS84;
+- coordenada central;
+- caminho do preview;
+- `label`;
+- `observacao`.
+
+## Escala futura
+
+Depois de validar visualmente um tile, o mesmo pipeline pode ser expandido para todos os tiles de Mato Grosso:
+
+```powershell
+python src\pipeline.py --max-tiles 0 --max-patches 0
+```
+
+**Não execute o estado inteiro antes de validar o teste.** O volume de dados pode ser muito grande.
+
+## GitHub
+
+GeoTIFFs e previews permanecem fora do Git. O repositório guarda código, configuração, catálogos e metodologia para tornar o dataset reproduzível sem usar o GitHub como armazenamento de imagens de satélite.
