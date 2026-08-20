@@ -17,6 +17,7 @@ __pycache__/
 config/google-oauth.json
 config/google-token.json
 config/client_secret_*.json
+config/configuracoes_local.db*
 
 # IDE / SO
 .vscode/

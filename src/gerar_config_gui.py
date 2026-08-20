@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -9,295 +10,625 @@ import yaml
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
-from sentinel2_mt.config_builder import gerar_config, salvar_config
+from sentinel2_mt.config_builder import gerar_config, salvar_config as persistir_config
+from sentinel2_mt.gui_support import (
+    LocalConfigStore,
+    montar_argumentos_operacao,
+    normalizar_bbox,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config" / "config.yaml"
+LOCAL_DB = ROOT / "config" / "configuracoes_local.db"
+SCRIPT_CLI = ROOT / "src" / "baixar_inpe_mt.py"
+
+# Compatibilidade com integrações que importavam esta função do módulo da GUI.
+bbox_para_yaml = normalizar_bbox
+
+
+ESTILO = """
+QMainWindow, QWidget#root { background: #f4f7f6; color: #17201d; }
+QWidget { font-family: "Inter", "Noto Sans", sans-serif; font-size: 13px; }
+QFrame#sidebar { background: #102b24; border: none; }
+QLabel#brandMark {
+    background: #49c98b; color: #092019; border-radius: 20px;
+    font-size: 16px; font-weight: 800;
+}
+QLabel#brandTitle { color: #ffffff; font-size: 16px; font-weight: 700; }
+QLabel#brandSub { color: #9cc4b7; font-size: 11px; }
+QPushButton#navButton {
+    color: #cbe2db; background: transparent; border: none;
+    border-radius: 8px; padding: 11px 14px; text-align: left;
+}
+QPushButton#navButton:hover { background: #173b32; color: white; }
+QPushButton#navButton:checked { background: #225344; color: white; font-weight: 650; }
+QLabel#pageTitle { font-size: 24px; font-weight: 750; color: #12211c; }
+QLabel#pageSubtitle { color: #66736e; font-size: 12px; }
+QLabel#statusChip {
+    background: #e5f7ee; color: #19754c; border: 1px solid #bee8d3;
+    border-radius: 12px; padding: 5px 10px; font-weight: 650;
+}
+QFrame#card {
+    background: white; border: 1px solid #dce6e2; border-radius: 12px;
+}
+QLabel#cardTitle { font-size: 15px; font-weight: 700; color: #1a2a24; }
+QLabel#cardHelp { color: #73807b; font-size: 11px; }
+QLineEdit, QDateEdit, QSpinBox, QDoubleSpinBox, QComboBox, QPlainTextEdit, QListWidget, QTreeWidget {
+    background: #fbfdfc; border: 1px solid #cfdcd7; border-radius: 7px;
+    padding: 7px; selection-background-color: #49c98b;
+}
+QLineEdit:focus, QDateEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus,
+QComboBox:focus, QPlainTextEdit:focus, QListWidget:focus, QTreeWidget:focus { border: 1px solid #279a66; }
+QPushButton#primaryButton {
+    background: #168a58; color: white; border: none; border-radius: 8px;
+    padding: 9px 16px; font-weight: 700;
+}
+QPushButton#primaryButton:hover { background: #10784b; }
+QPushButton#primaryButton:disabled { background: #9db8ad; }
+QPushButton#secondaryButton {
+    background: #eef4f1; color: #24473b; border: 1px solid #cbdad4;
+    border-radius: 8px; padding: 8px 14px; font-weight: 600;
+}
+QPushButton#secondaryButton:hover { background: #e1eee8; }
+QPushButton#dangerButton {
+    background: #fff0ee; color: #a63d32; border: 1px solid #f2c8c2;
+    border-radius: 8px; padding: 8px 14px; font-weight: 650;
+}
+QPushButton#dangerButton:hover { background: #ffe3df; }
+QPushButton#dangerButton:disabled { background: #f1f3f2; color: #aab3af; border-color: #dfe4e2; }
+QProgressBar { border: none; border-radius: 3px; background: #dce8e3; max-height: 6px; }
+QProgressBar::chunk { background: #35b978; border-radius: 3px; }
+QPlainTextEdit#log { background: #10211c; color: #d8eee6; border: none; font-family: monospace; }
+QLabel#previewImage {
+    background: #eaf1ee; border: 1px dashed #b8cac3; border-radius: 10px;
+    color: #687b74;
+}
+QSplitter::handle { background: #edf2f0; width: 4px; height: 4px; }
+QScrollArea { border: none; background: transparent; }
+QScrollArea > QWidget > QWidget { background: transparent; }
+"""
+
+
+def botao(texto: str, tipo: str = "secondaryButton") -> QtWidgets.QPushButton:
+    componente = QtWidgets.QPushButton(texto)
+    componente.setObjectName(tipo)
+    componente.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+    return componente
+
+
+class Cartao(QtWidgets.QFrame):
+    def __init__(self, titulo: str, ajuda: str = "") -> None:
+        super().__init__()
+        self.setObjectName("card")
+        self.layout_principal = QtWidgets.QVBoxLayout(self)
+        self.layout_principal.setContentsMargins(18, 16, 18, 18)
+        self.layout_principal.setSpacing(10)
+        rotulo = QtWidgets.QLabel(titulo)
+        rotulo.setObjectName("cardTitle")
+        self.layout_principal.addWidget(rotulo)
+        if ajuda:
+            descricao = QtWidgets.QLabel(ajuda)
+            descricao.setObjectName("cardHelp")
+            descricao.setWordWrap(True)
+            self.layout_principal.addWidget(descricao)
 
 
 class MapaWidget(QWebEngineView):
     areaSelecionada = QtCore.Signal(object)
 
-    def __init__(self, parent=None):
+    def __init__(self, bbox_inicial: list[float], parent=None) -> None:
         super().__init__(parent)
-        self._selection = None
-        self.setMinimumHeight(420)
-        self.loadFinished.connect(self._on_load_finished)
-        self.setHtml(self._html_do_mapa())
+        self.bbox_inicial = bbox_inicial
+        self.setMinimumHeight(460)
+        self.loadFinished.connect(self._ao_carregar)
+        self.setHtml(self._html())
 
-    def _on_load_finished(self, ok):
-        if not ok:
-            return
-        self.page().runJavaScript("""
-            if (typeof window.map !== 'undefined') {
-                setTimeout(function() { window.map.invalidateSize(); }, 250);
-                setTimeout(function() { window.map.invalidateSize(); }, 1000);
-            }
-        """)
+    def _ao_carregar(self, carregou: bool) -> None:
+        if carregou:
+            self.exibir_bbox(self.bbox_inicial)
 
-    def _html_do_mapa(self) -> str:
-        return """
-        <!doctype html>
-        <html>
-        <head>
-          <meta charset="utf-8" />
-          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-          <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-          <style>
-            html, body {
-              margin: 0;
-              width: 100%;
-              height: 100vh;
-              min-height: 420px;
-            }
-            #map {
-              width: 100%;
-              height: 100vh;
-              min-height: 420px;
-              background: #dfeaf5;
-            }
-          </style>
-        </head>
-        <body>
-          <div id="map"></div>
-          <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-          <script>
-            const defaultCenter = [-15.5, -55.0];
-            const map = L.map('map', { zoomControl: true, attributionControl: true, worldCopyJump: true }).setView(defaultCenter, 5);
-            window.map = map;
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-              attribution: '&copy; OpenStreetMap contributors'
-            }).addTo(map);
-            map.whenReady(function() {
-              setTimeout(function() { map.invalidateSize(); }, 200);
-              setTimeout(function() { map.invalidateSize(); }, 800);
-            });
-            window.addEventListener('resize', function() { map.invalidateSize(); });
-
-            let startLatlng = null;
-            let rectangle = null;
-            window.currentSelection = null;
-
-            function updateSelection(sw, ne) {
-              const bbox = [
-                Math.min(sw.lng, ne.lng),
-                Math.min(sw.lat, ne.lat),
-                Math.max(sw.lng, ne.lng),
-                Math.max(sw.lat, ne.lat)
-              ];
-              window.currentSelection = bbox;
-            }
-
-            function drawRectangleFromPoints(a, b) {
-              const sw = { lat: Math.min(a.lat, b.lat), lng: Math.min(a.lng, b.lng) };
-              const ne = { lat: Math.max(a.lat, b.lat), lng: Math.max(a.lng, b.lng) };
-              if (rectangle) {
-                map.removeLayer(rectangle);
-              }
-              rectangle = L.rectangle([[sw.lat, sw.lng], [ne.lat, ne.lng]], {
-                color: '#d32f2f',
-                weight: 2,
-                fillOpacity: 0.2
-              }).addTo(map);
-              updateSelection(sw, ne);
-            }
-
-            map.on('mousedown', (e) => {
-              startLatlng = e.latlng;
-            });
-
-            map.on('mousemove', (e) => {
-              if (!startLatlng) return;
-              drawRectangleFromPoints(startLatlng, e.latlng);
-            });
-
-            map.on('mouseup', (e) => {
-              if (!startLatlng) return;
-              drawRectangleFromPoints(startLatlng, e.latlng);
-              startLatlng = null;
-            });
-          </script>
-        </body>
-        </html>
-        """
+    def exibir_bbox(self, bbox: list[float]) -> None:
+        bbox = normalizar_bbox(bbox)
+        self.page().runJavaScript(f"window.setSelection({json.dumps(bbox)});")
 
     def capturar_bbox(self) -> None:
-        def _callback(valor):
+        def receber(valor: str | None) -> None:
             try:
-                payload = json.loads(valor) if valor else None
+                bbox = json.loads(valor) if valor else None
             except (TypeError, ValueError):
-                payload = None
-            if payload:
-                self.areaSelecionada.emit(payload)
-            else:
-                self.areaSelecionada.emit(None)
+                bbox = None
+            self.areaSelecionada.emit(bbox)
 
-        self.page().runJavaScript("JSON.stringify(window.currentSelection)", _callback)
+        self.page().runJavaScript("JSON.stringify(window.currentSelection)", receber)
+
+    @staticmethod
+    def _html() -> str:
+        return """
+        <!doctype html><html><head><meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <style>
+          html, body, #map { margin: 0; width: 100%; height: 100%; background: #dfe9e5; }
+          .hint { position: absolute; z-index: 900; top: 12px; left: 50%; transform: translateX(-50%);
+            background: rgba(16,43,36,.92); color: white; border-radius: 8px; padding: 8px 12px;
+            font: 12px sans-serif; box-shadow: 0 3px 12px rgba(0,0,0,.18); }
+        </style></head><body><div id="map"></div>
+        <div class="hint">Segure Shift e arraste para selecionar uma área</div>
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <script>
+          const map = L.map('map', {worldCopyJump: true}).setView([-15.5, -55.0], 5);
+          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors'
+          }).addTo(map);
+          let start = null;
+          let rectangle = null;
+          window.currentSelection = null;
+
+          window.setSelection = function(bbox) {
+            if (!bbox || bbox.length !== 4) return;
+            window.currentSelection = bbox;
+            const bounds = [[bbox[1], bbox[0]], [bbox[3], bbox[2]]];
+            if (rectangle) map.removeLayer(rectangle);
+            rectangle = L.rectangle(bounds, {color: '#168a58', weight: 2, fillOpacity: .16}).addTo(map);
+            map.fitBounds(bounds, {padding: [24, 24], maxZoom: 10});
+            setTimeout(() => map.invalidateSize(), 100);
+          };
+
+          map.on('mousedown', function(event) {
+            if (!event.originalEvent.shiftKey) return;
+            start = event.latlng;
+            map.dragging.disable();
+          });
+          map.on('mousemove', function(event) {
+            if (!start) return;
+            window.setSelection([
+              Math.min(start.lng, event.latlng.lng), Math.min(start.lat, event.latlng.lat),
+              Math.max(start.lng, event.latlng.lng), Math.max(start.lat, event.latlng.lat)
+            ]);
+          });
+          map.on('mouseup', function(event) {
+            if (!start) return;
+            window.setSelection([
+              Math.min(start.lng, event.latlng.lng), Math.min(start.lat, event.latlng.lat),
+              Math.max(start.lng, event.latlng.lng), Math.max(start.lat, event.latlng.lat)
+            ]);
+            start = null;
+            map.dragging.enable();
+          });
+          window.addEventListener('resize', () => map.invalidateSize());
+        </script></body></html>
+        """
 
 
 class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self):
+    PAGINAS = (
+        ("Visão geral", "Execute e acompanhe as operações"),
+        ("Área e período", "Escolha a região no mapa"),
+        ("Dados e qualidade", "Ajuste STAC, bandas e filtros"),
+        ("Google Drive", "Configure OAuth e sincronização"),
+        ("Configuração", "Revise YAML e perfis locais"),
+    )
+
+    def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Gerador de config.yaml - Sentinel-2 MT")
-        self.resize(1400, 900)
+        self.setWindowTitle("Sentinel-2 MT • Central de Operações")
+        self.resize(1480, 920)
+        self.setMinimumSize(1120, 720)
+        self.setStyleSheet(ESTILO)
 
-        self.mapa = MapaWidget(self)
-        self.mapa.areaSelecionada.connect(self._receber_bbox_do_mapa)
+        self.store = LocalConfigStore(LOCAL_DB)
+        self.processo = QtCore.QProcess(self)
+        self.processo.setProcessChannelMode(QtCore.QProcess.ProcessChannelMode.MergedChannels)
+        self.processo.readyReadStandardOutput.connect(self._ler_saida)
+        self.processo.finished.connect(self._processo_finalizado)
+        self.processo.errorOccurred.connect(self._erro_processo)
 
+        self._criar_campos()
+        self._montar_janela()
+        self._conectar_eventos()
+        self._atualizar_preview_yaml()
+        self._recarregar_perfis()
+        self._atualizar_operacao()
+
+    def _criar_campos(self) -> None:
         self.nome_regiao = QtWidgets.QLineEdit("Mato Grosso")
         self.uf = QtWidgets.QLineEdit("MT")
+        self.uf.setMaxLength(2)
+        self.oeste = self._coordenada(-180, 180, -61.65)
+        self.sul = self._coordenada(-90, 90, -18.05)
+        self.leste = self._coordenada(-180, 180, -50.20)
+        self.norte = self._coordenada(-90, 90, -7.30)
+
+        self.inicio = QtWidgets.QDateEdit(QtCore.QDate(2025, 9, 1))
+        self.fim = QtWidgets.QDateEdit(QtCore.QDate(2026, 4, 30))
+        for campo in (self.inicio, self.fim):
+            campo.setCalendarPopup(True)
+            campo.setDisplayFormat("dd/MM/yyyy")
+
         self.colecao = QtWidgets.QLineEdit("S2-16D-2")
         self.stac_url = QtWidgets.QLineEdit("https://data.inpe.br/bdc/stac/v1/")
-        self.inicio = QtWidgets.QLineEdit("2025-09-01")
-        self.fim = QtWidgets.QLineEdit("2026-04-30")
         self.bandas = QtWidgets.QLineEdit("B02, B03, B04, B08, NDVI")
-        self.filtrar_nuvens = QtWidgets.QCheckBox("Filtrar nuvens/sombra")
+        self.filtrar_nuvens = QtWidgets.QCheckBox("Descartar cenas com nuvens/sombra")
         self.filtrar_nuvens.setChecked(True)
-        self.manter_scl = QtWidgets.QCheckBox("Manter SCL")
+        self.manter_scl = QtWidgets.QCheckBox("Manter arquivo SCL")
         self.manter_scl.setChecked(True)
         self.gerar_rgb = QtWidgets.QCheckBox("Gerar preview RGB")
         self.gerar_rgb.setChecked(True)
-        self.nuvem_max_pct = QtWidgets.QSpinBox(); self.nuvem_max_pct.setRange(0, 100); self.nuvem_max_pct.setValue(20)
+        self.nuvem_max_pct = self._inteiro(0, 100, 20, "%")
+        self.tamanho_max_px = self._inteiro(100, 5000, 1600, " px")
+        self.qualidade_jpeg = self._inteiro(1, 100, 92, "%")
+
         self.pasta_download = QtWidgets.QLineEdit("data/sentinel2")
         self.catalogo = QtWidgets.QLineEdit("catalogo/catalogo_imagens.csv")
         self.output_path = QtWidgets.QLineEdit(str(DEFAULT_CONFIG))
+        self.timeout_segundos = self._inteiro(30, 600, 120, " s")
+        self.chunk_mb = self._inteiro(1, 50, 1, " MB")
+        self.max_itens_teste = self._inteiro(0, 1000, 5)
+        self.max_candidatos_teste = self._inteiro(1, 1000, 40)
+
         self.oauth_json = QtWidgets.QLineEdit("${GOOGLE_OAUTH_JSON:-}")
+        self.oauth_json.setPlaceholderText("Selecione o client_secret_*.json")
         self.token_json = QtWidgets.QLineEdit("${GOOGLE_TOKEN_JSON:-config/google-token.json}")
         self.pasta_remota = QtWidgets.QLineEdit("sentinel2-mt")
         self.pasta_id = QtWidgets.QLineEdit("${GOOGLE_PASTA_ID:-root}")
-        self.btn_oauth = QtWidgets.QPushButton("Selecionar JSON OAuth")
-        self.btn_oauth.clicked.connect(self.selecionar_oauth)
-        self.btn_imagem = QtWidgets.QPushButton("Abrir imagem de preview")
-        self.btn_imagem.clicked.connect(self.abrir_imagem_preview)
-        self.tamanho_lote = QtWidgets.QSpinBox(); self.tamanho_lote.setRange(1, 1000); self.tamanho_lote.setValue(100)
-        self.tamanho_max_px = QtWidgets.QSpinBox(); self.tamanho_max_px.setRange(100, 5000); self.tamanho_max_px.setValue(1600)
-        self.qualidade_jpeg = QtWidgets.QSpinBox(); self.qualidade_jpeg.setRange(1, 100); self.qualidade_jpeg.setValue(92)
-        self.timeout_segundos = QtWidgets.QSpinBox(); self.timeout_segundos.setRange(30, 600); self.timeout_segundos.setValue(120)
-        self.chunk_mb = QtWidgets.QSpinBox(); self.chunk_mb.setRange(1, 50); self.chunk_mb.setValue(1)
-        self.max_itens_teste = QtWidgets.QSpinBox(); self.max_itens_teste.setRange(0, 1000); self.max_itens_teste.setValue(5)
-        self.max_candidatos_teste = QtWidgets.QSpinBox(); self.max_candidatos_teste.setRange(1, 1000); self.max_candidatos_teste.setValue(40)
+        self.tamanho_lote = self._inteiro(1, 1000, 100, " arquivos")
 
-        self.oeste = QtWidgets.QDoubleSpinBox(); self.oeste.setRange(-180, 180); self.oeste.setValue(-61.65)
-        self.sul = QtWidgets.QDoubleSpinBox(); self.sul.setRange(-90, 90); self.sul.setValue(-18.05)
-        self.leste = QtWidgets.QDoubleSpinBox(); self.leste.setRange(-180, 180); self.leste.setValue(-50.20)
-        self.norte = QtWidgets.QDoubleSpinBox(); self.norte.setRange(-90, 90); self.norte.setValue(-7.30)
+        self.operacao = QtWidgets.QComboBox()
+        self.operacao.addItem("Catalogar sem baixar", "catalogar")
+        self.operacao.addItem("Baixar imagens aprovadas", "baixar")
+        self.operacao.addItem("Sincronizar com Google Drive", "sincronizar")
+        self.max_execucao = self._inteiro(0, 1000, 5)
+        self.max_execucao.setSpecialValueText("Todas")
 
-        self.preview = QtWidgets.QPlainTextEdit(); self.preview.setReadOnly(True)
-        self.btn_usar_mapa = QtWidgets.QPushButton("Usar área selecionada no mapa")
-        self.btn_usar_mapa.clicked.connect(self.mapa.capturar_bbox)
-        self.btn_gerar = QtWidgets.QPushButton("Gerar config.yaml")
-        self.btn_gerar.clicked.connect(self.gerar_config)
+        self.log = QtWidgets.QPlainTextEdit()
+        self.log.setObjectName("log")
+        self.log.setReadOnly(True)
+        self.log.document().setMaximumBlockCount(4000)
+        self.yaml_preview = QtWidgets.QPlainTextEdit()
+        self.yaml_preview.setReadOnly(True)
+        self.perfis = QtWidgets.QTreeWidget()
+        self.perfis.setHeaderLabel("Presets por região / UF")
+        self.perfis.setAlternatingRowColors(True)
+        self.perfis.setExpandsOnDoubleClick(True)
+        self.imagem_preview = QtWidgets.QLabel("Nenhum preview selecionado")
+        self.imagem_preview.setObjectName("previewImage")
+        self.imagem_preview.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.imagem_preview.setMinimumHeight(210)
 
+    @staticmethod
+    def _inteiro(minimo: int, maximo: int, valor: int, sufixo: str = "") -> QtWidgets.QSpinBox:
+        campo = QtWidgets.QSpinBox()
+        campo.setRange(minimo, maximo)
+        campo.setValue(valor)
+        campo.setSuffix(sufixo)
+        return campo
+
+    @staticmethod
+    def _coordenada(minimo: float, maximo: float, valor: float) -> QtWidgets.QDoubleSpinBox:
+        campo = QtWidgets.QDoubleSpinBox()
+        campo.setRange(minimo, maximo)
+        campo.setDecimals(6)
+        campo.setValue(valor)
+        return campo
+
+    def _montar_janela(self) -> None:
+        raiz = QtWidgets.QWidget()
+        raiz.setObjectName("root")
+        estrutura = QtWidgets.QHBoxLayout(raiz)
+        estrutura.setContentsMargins(0, 0, 0, 0)
+        estrutura.setSpacing(0)
+        estrutura.addWidget(self._criar_sidebar())
+
+        area = QtWidgets.QWidget()
+        layout_area = QtWidgets.QVBoxLayout(area)
+        layout_area.setContentsMargins(28, 20, 28, 18)
+        layout_area.setSpacing(16)
+        layout_area.addLayout(self._criar_cabecalho())
+
+        self.stack = QtWidgets.QStackedWidget()
+        self.stack.addWidget(self._pagina_visao_geral())
+        self.stack.addWidget(self._pagina_area())
+        self.stack.addWidget(self._pagina_dados())
+        self.stack.addWidget(self._pagina_drive())
+        self.stack.addWidget(self._pagina_config())
+        layout_area.addWidget(self.stack, 1)
+        layout_area.addWidget(self._barra_acoes())
+        estrutura.addWidget(area, 1)
+        self.setCentralWidget(raiz)
+
+    def _criar_sidebar(self) -> QtWidgets.QFrame:
+        painel = QtWidgets.QFrame()
+        painel.setObjectName("sidebar")
+        painel.setFixedWidth(230)
+        layout = QtWidgets.QVBoxLayout(painel)
+        layout.setContentsMargins(18, 22, 18, 20)
+        layout.setSpacing(8)
+
+        marca = QtWidgets.QHBoxLayout()
+        simbolo = QtWidgets.QLabel("S2")
+        simbolo.setObjectName("brandMark")
+        simbolo.setFixedSize(40, 40)
+        simbolo.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        textos = QtWidgets.QVBoxLayout()
+        titulo = QtWidgets.QLabel("Sentinel-2 MT")
+        titulo.setObjectName("brandTitle")
+        subtitulo = QtWidgets.QLabel("Downloader & Sync")
+        subtitulo.setObjectName("brandSub")
+        textos.addWidget(titulo)
+        textos.addWidget(subtitulo)
+        marca.addWidget(simbolo)
+        marca.addLayout(textos)
+        layout.addLayout(marca)
+        layout.addSpacing(24)
+
+        self.grupo_navegacao = QtWidgets.QButtonGroup(self)
+        self.grupo_navegacao.setExclusive(True)
+        self.botoes_navegacao: list[QtWidgets.QPushButton] = []
+        for indice, (nome, _) in enumerate(self.PAGINAS):
+            item = botao(nome, "navButton")
+            item.setCheckable(True)
+            item.clicked.connect(lambda _=False, i=indice: self._navegar(i))
+            self.grupo_navegacao.addButton(item, indice)
+            self.botoes_navegacao.append(item)
+            layout.addWidget(item)
+        self.botoes_navegacao[0].setChecked(True)
+        layout.addStretch()
+        versao = QtWidgets.QLabel("API STAC INPE\nGoogle Drive OAuth")
+        versao.setObjectName("brandSub")
+        layout.addWidget(versao)
+        return painel
+
+    def _criar_cabecalho(self) -> QtWidgets.QHBoxLayout:
+        layout = QtWidgets.QHBoxLayout()
+        textos = QtWidgets.QVBoxLayout()
+        self.titulo_pagina = QtWidgets.QLabel(self.PAGINAS[0][0])
+        self.titulo_pagina.setObjectName("pageTitle")
+        self.subtitulo_pagina = QtWidgets.QLabel(self.PAGINAS[0][1])
+        self.subtitulo_pagina.setObjectName("pageSubtitle")
+        textos.addWidget(self.titulo_pagina)
+        textos.addWidget(self.subtitulo_pagina)
+        layout.addLayout(textos)
+        layout.addStretch()
+        self.status = QtWidgets.QLabel("Pronto")
+        self.status.setObjectName("statusChip")
+        layout.addWidget(self.status)
+        return layout
+
+    def _pagina_visao_geral(self) -> QtWidgets.QWidget:
+        pagina = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(pagina)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+
+        topo = QtWidgets.QHBoxLayout()
+        operacao = Cartao("Nova operação", "A configuração é salva automaticamente antes da execução.")
         form = QtWidgets.QFormLayout()
-        form.addRow("Nome da região:", self.nome_regiao)
-        form.addRow("UF:", self.uf)
-        form.addRow("Coleção STAC:", self.colecao)
-        form.addRow("URL STAC:", self.stac_url)
-        form.addRow("Data inicial:", self.inicio)
-        form.addRow("Data final:", self.fim)
-        form.addRow("Bandas:", self.bandas)
-        form.addRow("Filtrar nuvens:", self.filtrar_nuvens)
-        form.addRow("Manter SCL:", self.manter_scl)
-        form.addRow("Gerar preview RGB:", self.gerar_rgb)
-        form.addRow("Máximo de nuvens (%):", self.nuvem_max_pct)
-        form.addRow("Pasta de download:", self.pasta_download)
-        form.addRow("Catalogo:", self.catalogo)
-        form.addRow("Arquivo de saída:", self.output_path)
-        form.addRow("JSON OAuth:", self.oauth_json)
-        form.addRow("", self.btn_oauth)
-        form.addRow("Token do Drive:", self.token_json)
-        form.addRow("Pasta remota:", self.pasta_remota)
-        form.addRow("Pasta ID:", self.pasta_id)
-        form.addRow("Tamanho do lote:", self.tamanho_lote)
-        form.addRow("Tamanho preview (px):", self.tamanho_max_px)
-        form.addRow("Qualidade JPEG:", self.qualidade_jpeg)
-        form.addRow("Timeout (s):", self.timeout_segundos)
-        form.addRow("Chunk MB:", self.chunk_mb)
-        form.addRow("Max itens teste:", self.max_itens_teste)
-        form.addRow("Max candidatos:", self.max_candidatos_teste)
-        form.addRow("Oeste (lon):", self.oeste)
-        form.addRow("Sul (lat):", self.sul)
-        form.addRow("Leste (lon):", self.leste)
-        form.addRow("Norte (lat):", self.norte)
+        form.addRow("Operação", self.operacao)
+        form.addRow("Máximo de cenas", self.max_execucao)
+        self.resumo_operacao = QtWidgets.QLabel()
+        self.resumo_operacao.setWordWrap(True)
+        self.resumo_operacao.setObjectName("cardHelp")
+        operacao.layout_principal.addLayout(form)
+        operacao.layout_principal.addWidget(self.resumo_operacao)
+        topo.addWidget(operacao, 2)
 
-        left_panel = QtWidgets.QWidget()
-        left_layout = QtWidgets.QVBoxLayout(left_panel)
-        left_layout.addLayout(form)
-        left_layout.addWidget(self.btn_usar_mapa)
-        left_layout.addWidget(self.btn_gerar)
+        destinos = Cartao("Arquivos locais", "Abra rapidamente a pasta de imagens ou um preview RGB.")
+        linha = QtWidgets.QHBoxLayout()
+        abrir_pasta = botao("Abrir pasta de imagens")
+        abrir_pasta.clicked.connect(self._abrir_pasta_imagens)
+        abrir_preview = botao("Visualizar preview")
+        abrir_preview.clicked.connect(self._abrir_imagem_preview)
+        linha.addWidget(abrir_pasta)
+        linha.addWidget(abrir_preview)
+        destinos.layout_principal.addLayout(linha)
+        topo.addWidget(destinos, 2)
+        layout.addLayout(topo)
 
-        self.imagem_preview = QtWidgets.QLabel("Preview da imagem será exibida aqui")
-        self.imagem_preview.setAlignment(QtCore.Qt.AlignCenter)
-        self.imagem_preview.setMinimumHeight(240)
-        self.imagem_preview.setStyleSheet("border: 1px solid #b0b0b0; background: #f5f5f5; color: #444; padding: 8px;")
+        divisor = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        log_card = Cartao("Saída da operação", "Acompanhe downloads, lotes e autenticação em tempo real.")
+        log_card.layout_principal.addWidget(self.log, 1)
+        divisor.addWidget(log_card)
+        preview_card = Cartao("Preview da cena")
+        preview_card.layout_principal.addWidget(self.imagem_preview, 1)
+        divisor.addWidget(preview_card)
+        divisor.setSizes([760, 390])
+        layout.addWidget(divisor, 1)
+        return pagina
 
-        right_panel = QtWidgets.QWidget()
-        right_layout = QtWidgets.QVBoxLayout(right_panel)
-        right_layout.addWidget(self.mapa)
-        right_layout.addWidget(self.preview)
-        right_layout.addWidget(self.btn_imagem)
-        right_layout.addWidget(self.imagem_preview)
+    def _pagina_area(self) -> QtWidgets.QWidget:
+        pagina = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(pagina)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
 
-        split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        split.addWidget(left_panel)
-        split.addWidget(right_panel)
-        split.setStretchFactor(0, 0)
-        split.setStretchFactor(1, 1)
+        bbox_inicial = [self.oeste.value(), self.sul.value(), self.leste.value(), self.norte.value()]
+        self.mapa = MapaWidget(bbox_inicial, self)
+        mapa_card = Cartao("Área de interesse", "Navegue normalmente; use Shift + arraste para desenhar.")
+        mapa_card.layout_principal.addWidget(self.mapa, 1)
+        aplicar = botao("Aplicar seleção do mapa", "primaryButton")
+        aplicar.clicked.connect(self.mapa.capturar_bbox)
+        mapa_card.layout_principal.addWidget(aplicar)
+        layout.addWidget(mapa_card, 3)
 
-        self.setCentralWidget(split)
+        detalhes = Cartao("Região e período", "As coordenadas usam a ordem oeste, sul, leste, norte.")
+        form = QtWidgets.QFormLayout()
+        form.addRow("Nome", self.nome_regiao)
+        form.addRow("UF", self.uf)
+        form.addRow("Data inicial", self.inicio)
+        form.addRow("Data final", self.fim)
+        form.addRow("Oeste", self.oeste)
+        form.addRow("Sul", self.sul)
+        form.addRow("Leste", self.leste)
+        form.addRow("Norte", self.norte)
+        detalhes.layout_principal.addLayout(form)
+        salvar_perfil = botao("Salvar como perfil local")
+        salvar_perfil.clicked.connect(self._salvar_perfil)
+        detalhes.layout_principal.addWidget(salvar_perfil)
+        detalhes.layout_principal.addStretch()
+        layout.addWidget(detalhes, 1)
+        return pagina
 
-    def selecionar_oauth(self):
-        caminho, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            "Selecione o arquivo JSON OAuth",
-            "",
-            "Arquivos JSON (*.json)",
+    def _pagina_dados(self) -> QtWidgets.QWidget:
+        pagina = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(pagina)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+
+        fonte = Cartao("Fonte STAC", "Catálogo público do INPE/Brazil Data Cube.")
+        form_fonte = QtWidgets.QFormLayout()
+        form_fonte.addRow("URL STAC", self.stac_url)
+        form_fonte.addRow("Coleção", self.colecao)
+        form_fonte.addRow("Bandas", self.bandas)
+        form_fonte.addRow("Pasta de download", self.pasta_download)
+        form_fonte.addRow("Catálogo CSV", self.catalogo)
+        form_fonte.addRow("Timeout", self.timeout_segundos)
+        form_fonte.addRow("Chunk", self.chunk_mb)
+        form_fonte.addRow("Cenas padrão", self.max_itens_teste)
+        form_fonte.addRow("Candidatos máximos", self.max_candidatos_teste)
+        fonte.layout_principal.addLayout(form_fonte)
+        fonte.layout_principal.addStretch()
+        layout.addWidget(fonte, 1)
+
+        qualidade = Cartao("Qualidade e visualização", "Filtre antes de baixar as bandas científicas maiores.")
+        form_qualidade = QtWidgets.QFormLayout()
+        form_qualidade.addRow(self.filtrar_nuvens)
+        form_qualidade.addRow("Limite de nuvens", self.nuvem_max_pct)
+        form_qualidade.addRow(self.manter_scl)
+        form_qualidade.addRow(self.gerar_rgb)
+        form_qualidade.addRow("Tamanho do preview", self.tamanho_max_px)
+        form_qualidade.addRow("Qualidade JPEG", self.qualidade_jpeg)
+        qualidade.layout_principal.addLayout(form_qualidade)
+        qualidade.layout_principal.addStretch()
+        layout.addWidget(qualidade, 1)
+        return pagina
+
+    def _pagina_drive(self) -> QtWidgets.QWidget:
+        pagina = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(pagina)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+
+        credenciais = Cartao(
+            "OAuth do Google",
+            "Escolha o JSON de aplicativo para computador. O token será criado e reutilizado automaticamente.",
         )
-        if caminho:
-            self.oauth_json.setText(caminho)
+        escolher = botao("Selecionar JSON OAuth")
+        escolher.clicked.connect(self._selecionar_oauth)
+        linha_oauth = QtWidgets.QHBoxLayout()
+        linha_oauth.addWidget(self.oauth_json, 1)
+        linha_oauth.addWidget(escolher)
+        form = QtWidgets.QFormLayout()
+        form.addRow("Credencial OAuth", linha_oauth)
+        form.addRow("Token local", self.token_json)
+        credenciais.layout_principal.addLayout(form)
+        layout.addWidget(credenciais)
 
-    def abrir_imagem_preview(self):
-        caminho, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            "Selecione a imagem para visualizar",
-            str(Path(self.pasta_download.text().strip() or "data/sentinel2").resolve()),
-            "Imagens (*.png *.jpg *.jpeg *.tif *.tiff *.bmp)",
+        destino = Cartao("Destino e lotes", "A hierarquia local de datas e cenas é preservada no Drive.")
+        form_destino = QtWidgets.QFormLayout()
+        form_destino.addRow("Nome da pasta remota", self.pasta_remota)
+        form_destino.addRow("ID da pasta pai", self.pasta_id)
+        form_destino.addRow("Tamanho do lote", self.tamanho_lote)
+        destino.layout_principal.addLayout(form_destino)
+        layout.addWidget(destino)
+
+        nota = QtWidgets.QLabel(
+            "Privacidade: a aplicação solicita o escopo drive.file, limitado aos arquivos "
+            "criados ou abertos pelo próprio aplicativo. Credenciais não são salvas nos perfis de região."
         )
-        if not caminho:
-            return
-        self._mostrar_imagem(caminho)
+        nota.setWordWrap(True)
+        nota.setObjectName("pageSubtitle")
+        layout.addWidget(nota)
+        layout.addStretch()
+        return pagina
 
-    def _mostrar_imagem(self, caminho: str):
-        pixmap = QtGui.QPixmap(caminho)
-        if pixmap.isNull():
-            self.imagem_preview.setText(f"Não foi possível carregar a imagem:\n{caminho}")
-            return
-        escala = min(1.0, 680 / max(pixmap.width(), 1))
-        pixmap = pixmap.scaled(int(pixmap.width() * escala), int(pixmap.height() * escala), QtCore.Qt.KeepAspectRatio)
-        self.imagem_preview.setPixmap(pixmap)
+    def _pagina_config(self) -> QtWidgets.QWidget:
+        pagina = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(pagina)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
 
-    def _receber_bbox_do_mapa(self, bbox):
-        if not bbox or len(bbox) != 4:
-            return
-        self.oeste.setValue(float(bbox[0]))
-        self.sul.setValue(float(bbox[1]))
-        self.leste.setValue(float(bbox[2]))
-        self.norte.setValue(float(bbox[3]))
-        self.preview.setPlainText(
-            "Área selecionada no mapa:\n"
-            f"oeste={bbox[0]}, sul={bbox[1]}, leste={bbox[2]}, norte={bbox[3]}"
+        config = Cartao("config.yaml", "Revise o conteúdo antes de salvar ou executar.")
+        caminho_linha = QtWidgets.QHBoxLayout()
+        caminho_linha.addWidget(self.output_path, 1)
+        escolher = botao("Escolher arquivo")
+        escolher.clicked.connect(self._selecionar_config)
+        caminho_linha.addWidget(escolher)
+        config.layout_principal.addLayout(caminho_linha)
+        config.layout_principal.addWidget(self.yaml_preview, 1)
+        atualizar = botao("Atualizar prévia")
+        atualizar.clicked.connect(self._atualizar_preview_yaml)
+        config.layout_principal.addWidget(atualizar)
+        layout.addWidget(config, 2)
+
+        perfis = Cartao("Perfis de região", "Salvos apenas neste computador em um banco SQLite local.")
+        perfis.layout_principal.addWidget(self.perfis, 1)
+        linha = QtWidgets.QHBoxLayout()
+        carregar = botao("Carregar")
+        carregar.clicked.connect(self._carregar_perfil)
+        excluir = botao("Excluir", "dangerButton")
+        excluir.clicked.connect(self._excluir_perfil)
+        linha.addWidget(carregar)
+        linha.addWidget(excluir)
+        perfis.layout_principal.addLayout(linha)
+        layout.addWidget(perfis, 1)
+        return pagina
+
+    def _barra_acoes(self) -> QtWidgets.QWidget:
+        barra = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(barra)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.progresso = QtWidgets.QProgressBar()
+        self.progresso.setTextVisible(False)
+        self.progresso.setFixedWidth(180)
+        self.progresso.setRange(0, 1)
+        self.progresso.setValue(0)
+        layout.addWidget(self.progresso)
+        layout.addStretch()
+        self.btn_salvar = botao("Salvar configuração")
+        self.btn_cancelar = botao("Cancelar", "dangerButton")
+        self.btn_cancelar.setEnabled(False)
+        self.btn_executar = botao("Executar operação", "primaryButton")
+        layout.addWidget(self.btn_salvar)
+        layout.addWidget(self.btn_cancelar)
+        layout.addWidget(self.btn_executar)
+        return barra
+
+    def _conectar_eventos(self) -> None:
+        self.mapa.areaSelecionada.connect(self._receber_bbox)
+        self.operacao.currentIndexChanged.connect(self._atualizar_operacao)
+        self.btn_salvar.clicked.connect(self._salvar_configuracao)
+        self.btn_executar.clicked.connect(self._executar)
+        self.btn_cancelar.clicked.connect(self._cancelar)
+
+    def _navegar(self, indice: int) -> None:
+        self.stack.setCurrentIndex(indice)
+        self.titulo_pagina.setText(self.PAGINAS[indice][0])
+        self.subtitulo_pagina.setText(self.PAGINAS[indice][1])
+
+    def _atualizar_operacao(self) -> None:
+        operacao = self.operacao.currentData()
+        mensagens = {
+            "catalogar": "Consulta o INPE e atualiza o catálogo CSV sem baixar GeoTIFFs.",
+            "baixar": "Filtra nuvens, baixa as bandas aprovadas e gera previews RGB.",
+            "sincronizar": "Envia as imagens locais ao Google Drive em lotes configuráveis.",
+        }
+        self.resumo_operacao.setText(mensagens[str(operacao)])
+        self.max_execucao.setEnabled(operacao != "sincronizar")
+
+    def _coletar_dados(self) -> dict[str, Any]:
+        bbox = normalizar_bbox(
+            [self.oeste.value(), self.sul.value(), self.leste.value(), self.norte.value()]
         )
-
-    def coletar_dados(self) -> dict[str, Any]:
-        bandas = [item.strip() for item in self.bandas.text().split(",") if item.strip()]
+        bandas = [banda.strip() for banda in self.bandas.text().split(",") if banda.strip()]
         return {
-            "bbox": [self.oeste.value(), self.sul.value(), self.leste.value(), self.norte.value()],
+            "bbox": bbox,
             "nome_regiao": self.nome_regiao.text().strip() or "Região personalizada",
-            "uf": self.uf.text().strip() or "MT",
+            "uf": self.uf.text().strip().upper() or "MT",
             "colecao": self.colecao.text().strip() or "S2-16D-2",
             "stac_url": self.stac_url.text().strip() or "https://data.inpe.br/bdc/stac/v1/",
-            "inicio": self.inicio.text().strip() or "2025-09-01",
-            "fim": self.fim.text().strip() or "2026-04-30",
+            "inicio": self.inicio.date().toString(QtCore.Qt.DateFormat.ISODate),
+            "fim": self.fim.date().toString(QtCore.Qt.DateFormat.ISODate),
             "bandas": bandas or ["B02", "B03", "B04", "B08", "NDVI"],
             "filtrar_nuvens": self.filtrar_nuvens.isChecked(),
             "manter_scl": self.manter_scl.isChecked(),
@@ -313,26 +644,261 @@ class MainWindow(QtWidgets.QMainWindow):
             "max_candidatos_teste": self.max_candidatos_teste.value(),
             "pasta_remota": self.pasta_remota.text().strip() or "sentinel2-mt",
             "oauth_json": self.oauth_json.text().strip() or "${GOOGLE_OAUTH_JSON:-}",
-            "token_json": self.token_json.text().strip() or "${GOOGLE_TOKEN_JSON:-config/google-token.json}",
+            "token_json": self.token_json.text().strip()
+            or "${GOOGLE_TOKEN_JSON:-config/google-token.json}",
             "pasta_id": self.pasta_id.text().strip() or "${GOOGLE_PASTA_ID:-root}",
             "tamanho_lote": self.tamanho_lote.value(),
             "extensoes": [".tif", ".tiff", ".jpg", ".jpeg"],
         }
 
-    def gerar_config(self):
+    def _atualizar_preview_yaml(self) -> None:
         try:
-            dados = self.coletar_dados()
-            payload = gerar_config(dados)
-            caminho = self.output_path.text().strip() or str(DEFAULT_CONFIG)
-            destino = salvar_config(caminho, dados)
-            self.preview.setPlainText(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False))
-            QtWidgets.QMessageBox.information(self, "Configuração salva", f"Arquivo gerado em:\n{destino}")
-        except Exception as exc:  # pragma: no cover
-            QtWidgets.QMessageBox.critical(self, "Erro", str(exc))
+            payload = gerar_config(self._coletar_dados())
+            self.yaml_preview.setPlainText(
+                yaml.safe_dump(payload, allow_unicode=True, sort_keys=False)
+            )
+        except (TypeError, ValueError) as erro:
+            self.yaml_preview.setPlainText(f"Configuração inválida: {erro}")
+
+    def _salvar_configuracao(self, avisar: bool = True) -> Path | None:
+        try:
+            destino = persistir_config(
+                self.output_path.text().strip() or DEFAULT_CONFIG,
+                self._coletar_dados(),
+            )
+            self._atualizar_preview_yaml()
+            self.status.setText("Configuração salva")
+            if avisar:
+                self.statusBar().showMessage(f"Configuração salva em {destino}", 5000)
+            return destino
+        except Exception as erro:
+            QtWidgets.QMessageBox.critical(self, "Configuração inválida", str(erro))
+            return None
+
+    def _executar(self) -> None:
+        if self.processo.state() != QtCore.QProcess.ProcessState.NotRunning:
+            return
+        config = self._salvar_configuracao(avisar=False)
+        if config is None:
+            return
+        try:
+            argumentos = montar_argumentos_operacao(
+                str(self.operacao.currentData()),
+                config,
+                inicio=self.inicio.date().toString(QtCore.Qt.DateFormat.ISODate),
+                fim=self.fim.date().toString(QtCore.Qt.DateFormat.ISODate),
+                max_itens=self.max_execucao.value(),
+                oauth_json=self.oauth_json.text().strip(),
+                tamanho_lote=self.tamanho_lote.value(),
+            )
+        except (FileNotFoundError, TypeError, ValueError) as erro:
+            QtWidgets.QMessageBox.warning(self, "Não foi possível executar", str(erro))
+            return
+
+        self.log.clear()
+        self.log.appendPlainText(f"$ {shlex.join([str(SCRIPT_CLI), *argumentos])}\n")
+        self._definir_execucao(True, "Executando")
+        self.processo.setWorkingDirectory(str(ROOT))
+        self.processo.start(sys.executable, ["-u", str(SCRIPT_CLI), *argumentos])
+
+    def _ler_saida(self) -> None:
+        texto = bytes(self.processo.readAllStandardOutput()).decode("utf-8", errors="replace")
+        if texto:
+            cursor = self.log.textCursor()
+            cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
+            cursor.insertText(texto)
+            self.log.setTextCursor(cursor)
+            self.log.ensureCursorVisible()
+
+    def _processo_finalizado(self, codigo: int, _status) -> None:
+        mensagem = "Concluído" if codigo == 0 else f"Encerrado com código {codigo}"
+        self.log.appendPlainText(f"\n[{mensagem}]")
+        self._definir_execucao(False, mensagem)
+
+    def _erro_processo(self, erro) -> None:
+        if erro == QtCore.QProcess.ProcessError.FailedToStart:
+            self.log.appendPlainText("\n[ERRO] Não foi possível iniciar o processo Python.")
+            self._definir_execucao(False, "Falha ao iniciar")
+
+    def _definir_execucao(self, executando: bool, mensagem: str) -> None:
+        self.btn_executar.setEnabled(not executando)
+        self.btn_salvar.setEnabled(not executando)
+        self.btn_cancelar.setEnabled(executando)
+        self.progresso.setRange(0, 0 if executando else 1)
+        if not executando:
+            self.progresso.setValue(0)
+        self.status.setText(mensagem)
+
+    def _cancelar(self) -> None:
+        if self.processo.state() == QtCore.QProcess.ProcessState.NotRunning:
+            return
+        self.status.setText("Cancelando…")
+        self.processo.terminate()
+        QtCore.QTimer.singleShot(3000, self._forcar_cancelamento)
+
+    def _forcar_cancelamento(self) -> None:
+        if self.processo.state() != QtCore.QProcess.ProcessState.NotRunning:
+            self.processo.kill()
+
+    def _receber_bbox(self, bbox: object) -> None:
+        if not isinstance(bbox, list):
+            self.statusBar().showMessage("Desenhe uma área com Shift + arraste no mapa.", 5000)
+            return
+        try:
+            oeste, sul, leste, norte = normalizar_bbox(bbox)
+        except ValueError as erro:
+            self.statusBar().showMessage(str(erro), 5000)
+            return
+        self.oeste.setValue(oeste)
+        self.sul.setValue(sul)
+        self.leste.setValue(leste)
+        self.norte.setValue(norte)
+        self.statusBar().showMessage("Área do mapa aplicada à configuração.", 4000)
+
+    def _salvar_perfil(self) -> None:
+        try:
+            item_id = self.store.salvar(self._coletar_dados())
+            self._recarregar_perfis()
+            self.statusBar().showMessage(f"Perfil local #{item_id} salvo.", 5000)
+        except Exception as erro:
+            QtWidgets.QMessageBox.critical(self, "Erro ao salvar perfil", str(erro))
+
+    def _recarregar_perfis(self) -> None:
+        self.perfis.clear()
+        grupos = self.store.listar_por_uf()
+        if not grupos:
+            vazio = QtWidgets.QTreeWidgetItem(["Nenhum preset salvo"])
+            vazio.setDisabled(True)
+            self.perfis.addTopLevelItem(vazio)
+            return
+
+        for uf, perfis in grupos.items():
+            grupo = QtWidgets.QTreeWidgetItem([uf])
+            grupo.setExpanded(True)
+            for perfil in perfis:
+                item = QtWidgets.QTreeWidgetItem([perfil["nome_regiao"]])
+                item.setData(0, QtCore.Qt.ItemDataRole.UserRole, perfil["id"])
+                grupo.addChild(item)
+            self.perfis.addTopLevelItem(grupo)
+
+    def _perfil_selecionado(self) -> dict[str, Any] | None:
+        item = self.perfis.currentItem()
+        if item is None:
+            return None
+        if item.childCount() > 0:
+            item = item.child(0)
+        perfil_id = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        if perfil_id is None:
+            return None
+        return self.store.carregar(int(perfil_id))
+
+    def _carregar_perfil(self) -> None:
+        perfil = self._perfil_selecionado()
+        if perfil is None:
+            self.statusBar().showMessage("Selecione um perfil para carregar.", 4000)
+            return
+        self._aplicar_dados(json.loads(perfil["payload"]))
+        self.statusBar().showMessage(f"Perfil '{perfil['nome_regiao']}' carregado.", 5000)
+
+    def _excluir_perfil(self) -> None:
+        perfil = self._perfil_selecionado()
+        if perfil is None:
+            self.statusBar().showMessage("Selecione um perfil para excluir.", 4000)
+            return
+        resposta = QtWidgets.QMessageBox.question(
+            self,
+            "Excluir perfil",
+            f"Excluir o perfil '{perfil['nome_regiao']}'?",
+        )
+        if resposta == QtWidgets.QMessageBox.StandardButton.Yes:
+            self.store.excluir(int(perfil["id"]))
+            self._recarregar_perfis()
+
+    def _aplicar_dados(self, dados: dict[str, Any]) -> None:
+        self.nome_regiao.setText(str(dados.get("nome_regiao", self.nome_regiao.text())))
+        self.uf.setText(str(dados.get("uf", self.uf.text())))
+        self.colecao.setText(str(dados.get("colecao", self.colecao.text())))
+        self.stac_url.setText(str(dados.get("stac_url", self.stac_url.text())))
+        self.bandas.setText(", ".join(dados.get("bandas", [])) or self.bandas.text())
+        for campo, chave in ((self.inicio, "inicio"), (self.fim, "fim")):
+            data = QtCore.QDate.fromString(str(dados.get(chave, "")), QtCore.Qt.DateFormat.ISODate)
+            if data.isValid():
+                campo.setDate(data)
+        bbox = normalizar_bbox(dados.get("bbox", self._bbox_atual()))
+        self.oeste.setValue(bbox[0])
+        self.sul.setValue(bbox[1])
+        self.leste.setValue(bbox[2])
+        self.norte.setValue(bbox[3])
+        self.mapa.exibir_bbox(bbox)
+        self._atualizar_preview_yaml()
+
+    def _bbox_atual(self) -> list[float]:
+        return [self.oeste.value(), self.sul.value(), self.leste.value(), self.norte.value()]
+
+    def _selecionar_oauth(self) -> None:
+        caminho, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Selecione o JSON OAuth", str(ROOT / "config"), "Arquivos JSON (*.json)"
+        )
+        if caminho:
+            self.oauth_json.setText(caminho)
+
+    def _selecionar_config(self) -> None:
+        caminho, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Salvar configuração", self.output_path.text(), "YAML (*.yaml *.yml)"
+        )
+        if caminho:
+            self.output_path.setText(caminho)
+
+    def _abrir_pasta_imagens(self) -> None:
+        pasta = Path(self.pasta_download.text().strip() or "data/sentinel2").expanduser()
+        if not pasta.is_absolute():
+            pasta = ROOT / pasta
+        pasta.mkdir(parents=True, exist_ok=True)
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(pasta)))
+
+    def _abrir_imagem_preview(self) -> None:
+        caminho, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Abrir preview",
+            str(ROOT / (self.pasta_download.text().strip() or "data/sentinel2")),
+            "Imagens (*.png *.jpg *.jpeg *.bmp)",
+        )
+        if not caminho:
+            return
+        imagem = QtGui.QPixmap(caminho)
+        if imagem.isNull():
+            self.statusBar().showMessage("Não foi possível carregar a imagem.", 5000)
+            return
+        self.imagem_preview.setPixmap(
+            imagem.scaled(
+                520,
+                380,
+                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                QtCore.Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
+    def closeEvent(self, evento: QtGui.QCloseEvent) -> None:
+        if self.processo.state() != QtCore.QProcess.ProcessState.NotRunning:
+            resposta = QtWidgets.QMessageBox.question(
+                self, "Operação em andamento", "Cancelar a operação e sair?"
+            )
+            if resposta != QtWidgets.QMessageBox.StandardButton.Yes:
+                evento.ignore()
+                return
+            self.processo.kill()
+            self.processo.waitForFinished(1500)
+        evento.accept()
+
+
+def main() -> int:
+    app = QtWidgets.QApplication(sys.argv)
+    app.setApplicationName("Sentinel-2 MT")
+    app.setOrganizationName("Sentinel2 MT")
+    janela = MainWindow()
+    janela.show()
+    return app.exec()
 
 
 if __name__ == "__main__":
-    app = QtWidgets.QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    raise SystemExit(main())
