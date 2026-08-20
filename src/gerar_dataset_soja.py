@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import json
 import math
 import shutil
@@ -10,19 +11,21 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 import numpy as np
-import planetary_computer
-import rasterio
+import requests
 import yaml
 from PIL import Image
 from pyproj import Transformer
 from pystac_client import Client
-from rasterio.enums import Resampling
-from rasterio.transform import from_bounds as transform_from_bounds
-from rasterio.vrt import WarpedVRT
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PADRAO = ROOT / "config" / "config.yaml"
-BANDAS = ("B02", "B03", "B04", "B08")
+ASSETS = ("B02", "B03", "B04", "B08", "SCL")
+
+
+class DataAPIError(RuntimeError):
+    pass
 
 
 def carregar_config(caminho: Path) -> dict:
@@ -30,24 +33,42 @@ def carregar_config(caminho: Path) -> dict:
         return yaml.safe_load(f)
 
 
-def meses(inicio: str, fim: str):
-    a = datetime.strptime(inicio, "%Y-%m-%d").date().replace(day=1)
-    b = datetime.strptime(fim, "%Y-%m-%d").date().replace(day=1)
-    atual = a
-    while atual <= b:
-        ultimo = monthrange(atual.year, atual.month)[1]
-        yield atual, date(atual.year, atual.month, ultimo)
+def iterar_meses(inicio: str, fim: str):
+    atual = datetime.strptime(inicio, "%Y-%m-%d").date().replace(day=1)
+    ultimo_mes = datetime.strptime(fim, "%Y-%m-%d").date().replace(day=1)
+    while atual <= ultimo_mes:
+        ultimo_dia = monthrange(atual.year, atual.month)[1]
+        yield atual, date(atual.year, atual.month, ultimo_dia)
         if atual.month == 12:
             atual = date(atual.year + 1, 1, 1)
         else:
             atual = date(atual.year, atual.month + 1, 1)
 
 
+def sessao_http(tentativas: int, backoff: float) -> requests.Session:
+    retry = Retry(
+        total=max(0, tentativas - 1),
+        connect=max(0, tentativas - 1),
+        read=max(0, tentativas - 1),
+        status=max(0, tentativas - 1),
+        backoff_factor=max(0.0, backoff),
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET"}),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=16, pool_maxsize=16)
+    s = requests.Session()
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    s.headers.update({"User-Agent": "sentinel2-mt-downloader/soja-dataapi-2.0"})
+    return s
+
+
 def dilatar(mask: np.ndarray, raio: int) -> np.ndarray:
     if raio <= 0:
         return mask.copy()
     h, w = mask.shape
-    padded = np.pad(mask, raio, mode="constant", constant_values=True)
+    padded = np.pad(mask, raio, mode="constant", constant_values=False)
     out = np.zeros_like(mask, dtype=bool)
     for dy in range(-raio, raio + 1):
         for dx in range(-raio, raio + 1):
@@ -55,36 +76,6 @@ def dilatar(mask: np.ndarray, raio: int) -> np.ndarray:
             x0 = raio + dx
             out |= padded[y0 : y0 + h, x0 : x0 + w]
     return out
-
-
-def read_patch(item, asset_key: str, bounds_m, crs_alvo: str, shape: tuple[int, int], resampling: Resampling):
-    asset = item.assets.get(asset_key)
-    if asset is None:
-        return None
-
-    altura, largura = shape
-    target_transform = transform_from_bounds(*bounds_m, largura, altura)
-
-    try:
-        with rasterio.Env(
-            GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
-            CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif,.TIF",
-            GDAL_HTTP_MULTIRANGE="YES",
-            GDAL_HTTP_MERGE_CONSECUTIVE_RANGES="YES",
-        ):
-            with rasterio.open(asset.href) as src:
-                with WarpedVRT(
-                    src,
-                    crs=crs_alvo,
-                    transform=target_transform,
-                    width=largura,
-                    height=altura,
-                    resampling=resampling,
-                    nodata=0,
-                ) as vrt:
-                    return vrt.read(1)
-    except Exception:
-        return None
 
 
 def stretch(arr: np.ndarray, mask: np.ndarray, pmin: float, pmax: float) -> np.ndarray:
@@ -103,7 +94,17 @@ def stretch(arr: np.ndarray, mask: np.ndarray, pmin: float, pmax: float) -> np.n
     return out
 
 
-def salvar_preview(b02, b03, b04, valid, destino: Path, saida_px: int, pmin: float, pmax: float, qualidade: int):
+def salvar_preview(
+    b02: np.ndarray,
+    b03: np.ndarray,
+    b04: np.ndarray,
+    valid: np.ndarray,
+    destino: Path,
+    saida_px: int,
+    pmin: float,
+    pmax: float,
+    qualidade: int,
+) -> None:
     rgb = np.dstack(
         (
             stretch(b04, valid, pmin, pmax),
@@ -115,26 +116,12 @@ def salvar_preview(b02, b03, b04, valid, destino: Path, saida_px: int, pmin: flo
     if saida_px > 0 and img.size != (saida_px, saida_px):
         img = img.resize((saida_px, saida_px), resample=Image.Resampling.NEAREST)
     destino.parent.mkdir(parents=True, exist_ok=True)
-    img.save(destino, "JPEG", quality=max(1, min(100, qualidade)), optimize=True)
-
-
-def buscar_itens(cliente: Client, colecao: str, bbox, inicio: date, fim: date, cloud_max: float, limite: int):
-    search = cliente.search(
-        collections=[colecao],
-        bbox=bbox,
-        datetime=f"{inicio.isoformat()}/{fim.isoformat()}",
-        query={"eo:cloud_cover": {"lte": cloud_max}},
-        max_items=max(limite * 4, limite),
+    img.save(
+        destino,
+        "JPEG",
+        quality=max(1, min(100, qualidade)),
+        optimize=True,
     )
-    itens = list(search.items())
-
-    def chave(item):
-        cloud = float(item.properties.get("eo:cloud_cover", 100.0) or 100.0)
-        dt = item.datetime or datetime.max.replace(tzinfo=timezone.utc)
-        return (cloud, abs(dt.day - 15), dt)
-
-    itens.sort(key=chave)
-    return itens[:limite]
 
 
 def grid_patches(bbox_wgs84, crs_metrico: str, tamanho_px: int, resolucao_m: float):
@@ -142,7 +129,10 @@ def grid_patches(bbox_wgs84, crs_metrico: str, tamanho_px: int, resolucao_m: flo
     inv = Transformer.from_crs(crs_metrico, "EPSG:4326", always_xy=True)
 
     minlon, minlat, maxlon, maxlat = bbox_wgs84
-    xs, ys = fwd.transform([minlon, maxlon, minlon, maxlon], [minlat, minlat, maxlat, maxlat])
+    xs, ys = fwd.transform(
+        [minlon, maxlon, minlon, maxlon],
+        [minlat, minlat, maxlat, maxlat],
+    )
     minx, maxx = min(xs), max(xs)
     miny, maxy = min(ys), max(ys)
 
@@ -171,13 +161,219 @@ def grid_patches(bbox_wgs84, crs_metrico: str, tamanho_px: int, resolucao_m: flo
             }
 
 
+def bbox_intersecta(a, b) -> bool:
+    if not a or not b or len(a) != 4 or len(b) != 4:
+        return True
+    return not (a[2] <= b[0] or a[0] >= b[2] or a[3] <= b[1] or a[1] >= b[3])
+
+
+def buscar_itens(
+    cliente: Client,
+    colecao: str,
+    bbox,
+    inicio: date,
+    fim: date,
+    cloud_max: float,
+    max_itens: int,
+):
+    search = cliente.search(
+        collections=[colecao],
+        bbox=bbox,
+        datetime=f"{inicio.isoformat()}/{fim.isoformat()}",
+        query={"eo:cloud_cover": {"lte": cloud_max}},
+        max_items=max_itens,
+    )
+    itens = list(search.items())
+
+    def chave(item):
+        cloud = float(item.properties.get("eo:cloud_cover", 100.0) or 100.0)
+        dt = item.datetime or datetime.max.replace(tzinfo=timezone.utc)
+        return (cloud, abs(dt.day - 15), dt)
+
+    itens.sort(key=chave)
+    return itens
+
+
+def ler_patch_data_api(
+    sessao: requests.Session,
+    data_api_url: str,
+    colecao: str,
+    item_id: str,
+    bbox_wgs84,
+    tamanho_px: int,
+    crs_destino: str,
+    timeout: int,
+) -> dict[str, np.ndarray]:
+    minlon, minlat, maxlon, maxlat = bbox_wgs84
+    bbox_txt = ",".join(f"{v:.10f}" for v in (minlon, minlat, maxlon, maxlat))
+    url = (
+        f"{data_api_url.rstrip('/')}/item/bbox/"
+        f"{bbox_txt}/{tamanho_px}x{tamanho_px}.npy"
+    )
+
+    params: list[tuple[str, str]] = [
+        ("collection", colecao),
+        ("item", item_id),
+    ]
+    params.extend(("assets", asset) for asset in ASSETS)
+    params.extend(
+        [
+            ("asset_as_band", "true"),
+            ("coord_crs", "EPSG:4326"),
+            ("dst_crs", crs_destino),
+            ("resampling", "nearest"),
+            ("reproject", "nearest"),
+            ("return_mask", "true"),
+        ]
+    )
+
+    resposta = sessao.get(url, params=params, timeout=timeout)
+    if resposta.status_code != 200:
+        texto = resposta.text[:300].replace("\n", " ")
+        raise DataAPIError(f"HTTP {resposta.status_code}: {texto}")
+
+    try:
+        arr = np.load(io.BytesIO(resposta.content), allow_pickle=False)
+    except Exception as exc:
+        tipo = resposta.headers.get("content-type", "desconhecido")
+        raise DataAPIError(f"resposta NPY inválida ({tipo}): {exc}") from exc
+
+    if arr.ndim != 3:
+        raise DataAPIError(f"shape inesperado: {arr.shape}")
+
+    # TiTiler NPY inclui a máscara como último plano quando return_mask=true.
+    if arr.shape[0] < len(ASSETS) + 1:
+        raise DataAPIError(
+            f"esperado >= {len(ASSETS) + 1} planos (5 assets + mask), recebido {arr.shape}"
+        )
+
+    dados = arr[: len(ASSETS)]
+    mask = arr[-1] > 0
+    return {
+        "B02": dados[0],
+        "B03": dados[1],
+        "B04": dados[2],
+        "B08": dados[3],
+        "SCL": dados[4],
+        "MASK": mask,
+    }
+
+
+def compor_patch(
+    sessao: requests.Session,
+    itens,
+    data_api_url: str,
+    colecao: str,
+    bbox_patch,
+    tamanho: int,
+    crs_destino: str,
+    timeout: int,
+    classes_validas: set[int],
+    margem: int,
+    max_cenas: int,
+):
+    candidatos = [i for i in itens if bbox_intersecta(i.bbox, bbox_patch)]
+    candidatos = candidatos[:max_cenas]
+
+    if not candidatos:
+        return None, "sem_cenas_intersectando"
+
+    saidas = {
+        "B02": np.zeros((tamanho, tamanho), dtype=np.float32),
+        "B03": np.zeros((tamanho, tamanho), dtype=np.float32),
+        "B04": np.zeros((tamanho, tamanho), dtype=np.float32),
+        "B08": np.zeros((tamanho, tamanho), dtype=np.float32),
+    }
+    preenchido = np.zeros((tamanho, tamanho), dtype=bool)
+    obs_count = np.zeros((tamanho, tamanho), dtype=np.uint8)
+    fontes_usadas: list[dict] = []
+    erros: list[str] = []
+
+    for item in candidatos:
+        try:
+            dados = ler_patch_data_api(
+                sessao=sessao,
+                data_api_url=data_api_url,
+                colecao=colecao,
+                item_id=item.id,
+                bbox_wgs84=bbox_patch,
+                tamanho_px=tamanho,
+                crs_destino=crs_destino,
+                timeout=timeout,
+            )
+        except Exception as exc:
+            erros.append(f"{item.id}: {exc}")
+            continue
+
+        mask_servico = dados["MASK"]
+        scl = np.rint(dados["SCL"]).astype(np.int16)
+        superficie_ok = np.isin(scl, list(classes_validas))
+
+        # Só dilatamos pixels contaminados dentro da área realmente coberta pela cena.
+        contaminado = mask_servico & ~superficie_ok
+        contaminado = dilatar(contaminado, margem)
+        limpo = mask_servico & superficie_ok & ~contaminado
+
+        obs_count = np.minimum(
+            obs_count.astype(np.uint16) + limpo.astype(np.uint16),
+            255,
+        ).astype(np.uint8)
+
+        novos = limpo & ~preenchido
+        if novos.any():
+            for banda in ("B02", "B03", "B04", "B08"):
+                saidas[banda][novos] = dados[banda][novos]
+            preenchido[novos] = True
+            fontes_usadas.append(
+                {
+                    "item_id": item.id,
+                    "data": item.datetime.date().isoformat() if item.datetime else "",
+                    "cloud_scene_pct": float(item.properties.get("eo:cloud_cover", 100.0) or 100.0),
+                    "pixels_adicionados": int(novos.sum()),
+                }
+            )
+
+        if preenchido.all():
+            break
+
+    if not fontes_usadas:
+        detalhe = erros[0] if erros else "nenhuma fonte forneceu pixels limpos"
+        return None, detalhe
+
+    coverage = float(preenchido.mean() * 100.0)
+    obs2 = float(((obs_count >= 2) & preenchido).sum() * 100.0 / max(int(preenchido.sum()), 1))
+
+    denom = saidas["B08"] + saidas["B04"]
+    ndvi = np.full((tamanho, tamanho), np.nan, dtype=np.float32)
+    ok_ndvi = preenchido & np.isfinite(denom) & (denom != 0)
+    ndvi[ok_ndvi] = (
+        (saidas["B08"][ok_ndvi] - saidas["B04"][ok_ndvi]) / denom[ok_ndvi]
+    )
+
+    return {
+        **saidas,
+        "NDVI": ndvi,
+        "VALID": preenchido,
+        "OBS_COUNT": obs_count,
+        "coverage_pct": coverage,
+        "obs2_pct": obs2,
+        "fontes": fontes_usadas,
+        "erros_fontes": erros,
+    }, "ok"
+
+
 def main() -> int:
-    p = argparse.ArgumentParser(description="Gera patches Sentinel-2 limpos para catalogação de soja sem baixar cenas inteiras.")
+    p = argparse.ArgumentParser(
+        description=(
+            "Gera patches Sentinel-2 limpos para soja usando Planetary Computer Data API NPY, "
+            "sem Rasterio/GDAL e sem baixar cenas inteiras."
+        )
+    )
     p.add_argument("--config", type=Path, default=CONFIG_PADRAO)
     p.add_argument("--inicio")
     p.add_argument("--fim")
     p.add_argument("--mes", help="Processa apenas YYYY-MM")
-    p.add_argument("--max-patches", type=int, help="Limite por mês. 0 = todos.")
+    p.add_argument("--max-patches", type=int, help="Limite por mês. 0 = todos")
     p.add_argument("--limpar", action="store_true")
     args = p.parse_args()
 
@@ -185,6 +381,7 @@ def main() -> int:
     fonte = cfg["fonte"]
     aoi = cfg["aoi"]
     busca_cfg = cfg["busca"]
+    http_cfg = cfg.get("http", {})
     pcfg = cfg["patches"]
     saida_cfg = cfg["saida"]
 
@@ -195,8 +392,9 @@ def main() -> int:
     tamanho = int(pcfg["tamanho_px"])
     resolucao = float(pcfg["resolucao_m"])
     max_patches = int(pcfg.get("max_patches_por_mes", 20)) if args.max_patches is None else args.max_patches
-    cloud_max = float(busca_cfg.get("nuvem_cena_max_pct", 45))
-    max_cenas = int(busca_cfg.get("max_cenas_por_mes", 8))
+    cloud_max = float(busca_cfg.get("nuvem_cena_max_pct", 80))
+    max_itens_mes = int(busca_cfg.get("max_itens_busca_mes", 120))
+    max_cenas_patch = int(busca_cfg.get("max_cenas_por_patch", 10))
     clean_min = float(pcfg.get("cobertura_limpa_min_pct", 99.5))
     classes_validas = set(int(x) for x in pcfg.get("scl_classes_validas", [4, 5, 6]))
     margem = int(pcfg.get("margem_nuvem_px", 4))
@@ -205,6 +403,9 @@ def main() -> int:
     pmin = float(pcfg.get("percentil_min", 2))
     pmax = float(pcfg.get("percentil_max", 98))
     salvar_npz = bool(pcfg.get("salvar_npz", False))
+    timeout = int(http_cfg.get("timeout_segundos", 90))
+    tentativas = int(http_cfg.get("tentativas", 4))
+    backoff = float(http_cfg.get("backoff_segundos", 1.0))
 
     pasta_saida = ROOT / saida_cfg["pasta_patches"]
     catalogo = ROOT / saida_cfg["catalogo"]
@@ -213,176 +414,227 @@ def main() -> int:
     if args.limpar and pasta_saida.exists():
         shutil.rmtree(pasta_saida)
 
-    cliente = Client.open(fonte["stac_url"], modifier=planetary_computer.sign_inplace)
+    cliente = Client.open(fonte["stac_url"])
+    sessao = sessao_http(tentativas, backoff)
     grid = list(grid_patches(bbox, crs_m, tamanho, resolucao))
     if not grid:
         print("[ERRO] AOI pequeno demais para gerar patches.")
         return 2
 
     print("=" * 82)
-    print(" DATASET SOJA | Sentinel-2 L2A remoto, sem baixar cenas inteiras")
+    print(" DATASET SOJA | Sentinel-2 L2A via Data API NPY")
     print("=" * 82)
     print(f"Fonte: {fonte['nome']} | coleção: {fonte['colecao']}")
     print(f"AOI: {aoi['nome']} | patches possíveis: {len(grid)}")
     print(f"Patch: {tamanho}x{tamanho}px @ {resolucao:g} m = {tamanho * resolucao / 1000:.2f} km")
     print(f"Cobertura limpa mínima: {clean_min:.1f}%")
-    print(f"Cenas remotas avaliadas por mês: até {max_cenas}")
-    print("Nenhuma cena completa será salva no computador.\n")
+    print(f"Até {max_cenas_patch} cenas remotas por patch")
+    print("Rasterio/GDAL: NÃO UTILIZADO")
+    print("Cenas completas salvas no PC: NÃO\n")
 
     registros: list[dict] = []
-    meses_ok = 0
-    aprovados_total = 0
-    descartados_total = 0
+    total_ok = total_descartados = total_erros_api = 0
+    meses_processados = 0
+    erros_amostra: list[str] = []
 
-    for m_ini, m_fim in meses(inicio, fim):
-        mes = m_ini.strftime("%Y-%m")
-        if args.mes and mes != args.mes:
+    for mes_inicio, mes_fim in iterar_meses(inicio, fim):
+        mes_nome = mes_inicio.strftime("%Y-%m")
+        if args.mes and mes_nome != args.mes:
             continue
 
-        print(f"\n[{mes}] Buscando cenas...")
-        itens = buscar_itens(cliente, fonte["colecao"], bbox, m_ini, m_fim, cloud_max, max_cenas)
-        if not itens:
-            print("  [SEM DADOS] nenhuma cena adequada encontrada.")
+        meses_processados += 1
+        print(f"\n[{mes_nome}] Buscando cenas STAC...")
+        itens = buscar_itens(
+            cliente=cliente,
+            colecao=fonte["colecao"],
+            bbox=bbox,
+            inicio=mes_inicio,
+            fim=mes_fim,
+            cloud_max=cloud_max,
+            max_itens=max_itens_mes,
+        )
+        print(f"  Itens encontrados no AOI: {len(itens)}")
+        if itens:
+            print("  Melhores candidatos globais:")
+            for item in itens[:8]:
+                cloud = float(item.properties.get("eo:cloud_cover", 100.0) or 100.0)
+                data_item = item.datetime.date().isoformat() if item.datetime else "sem-data"
+                print(f"    {data_item} | nuvem cena={cloud:.1f}% | {item.id}")
+        else:
+            print("  [AVISO] Nenhuma cena encontrada.")
             continue
-
-        print("  Cenas candidatas:")
-        for item in itens:
-            cloud = float(item.properties.get("eo:cloud_cover", 100.0) or 100.0)
-            dt = item.datetime.date().isoformat() if item.datetime else "sem_data"
-            print(f"    {dt} | nuvem cena={cloud:.1f}% | {item.id}")
 
         aprovados_mes = 0
+        avaliados_mes = 0
+
         for patch in grid:
             if max_patches > 0 and aprovados_mes >= max_patches:
                 break
 
-            shape = (tamanho, tamanho)
-            comp = {b: np.zeros(shape, dtype=np.float32) for b in BANDAS}
-            filled = np.zeros(shape, dtype=bool)
-            obs_count = np.zeros(shape, dtype=np.uint8)
-            fontes_usadas: list[str] = []
+            avaliados_mes += 1
+            resultado, status = compor_patch(
+                sessao=sessao,
+                itens=itens,
+                data_api_url=fonte["data_api_url"],
+                colecao=fonte["colecao"],
+                bbox_patch=patch["bbox_wgs84"],
+                tamanho=tamanho,
+                crs_destino=crs_m,
+                timeout=timeout,
+                classes_validas=classes_validas,
+                margem=margem,
+                max_cenas=max_cenas_patch,
+            )
 
-            for item in itens:
-                scl = read_patch(item, "SCL", patch["bounds_m"], crs_m, shape, Resampling.nearest)
-                if scl is None:
-                    continue
-
-                clean = np.isin(scl, list(classes_validas))
-                ruim = ~clean
-                if margem > 0:
-                    clean &= ~dilatar(ruim, margem)
-                obs_count = np.minimum(obs_count.astype(np.uint16) + clean.astype(np.uint16), 255).astype(np.uint8)
-
-                contrib = clean & ~filled
-                if not contrib.any():
-                    continue
-
-                dados = {}
-                valido = contrib.copy()
-                for banda in BANDAS:
-                    arr = read_patch(item, banda, patch["bounds_m"], crs_m, shape, Resampling.bilinear)
-                    if arr is None:
-                        valido[:] = False
-                        break
-                    arr = arr.astype(np.float32)
-                    dados[banda] = arr
-                    valido &= np.isfinite(arr) & (arr > 0)
-
-                if not valido.any():
-                    continue
-
-                for banda in BANDAS:
-                    comp[banda][valido] = dados[banda][valido]
-                filled[valido] = True
-                fontes_usadas.append(item.id)
-
-                if filled.mean() * 100.0 >= clean_min:
-                    break
-
-            valid_pct = float(filled.mean() * 100.0)
-            if valid_pct < clean_min:
-                descartados_total += 1
+            if resultado is None:
+                total_descartados += 1
+                if "HTTP" in status or "NPY" in status or "shape" in status:
+                    total_erros_api += 1
+                    if len(erros_amostra) < 5:
+                        erros_amostra.append(status)
                 continue
 
-            obs2_pct = float(((obs_count >= 2) & filled).sum() * 100.0 / max(int(filled.sum()), 1))
-            spatial_id = f"r{patch['row']:04d}_c{patch['col']:04d}"
-            patch_id = f"{mes}_{spatial_id}"
-            pasta_patch = pasta_saida / mes / patch_id
+            coverage = float(resultado["coverage_pct"])
+            if coverage < clean_min:
+                total_descartados += 1
+                continue
+
+            r = patch["row"]
+            c = patch["col"]
+            spatial_id = f"r{r:04d}_c{c:04d}"
+            patch_id = f"{mes_nome}_{spatial_id}"
+            pasta_patch = pasta_saida / mes_nome / patch_id
             preview = pasta_patch / "preview_rgb.jpg"
 
-            salvar_preview(comp["B02"], comp["B03"], comp["B04"], filled, preview, saida_px, pmin, pmax, qualidade)
-
-            ndvi = np.zeros(shape, dtype=np.float32)
-            den = comp["B08"] + comp["B04"]
-            ndvi_mask = filled & (den != 0)
-            ndvi[ndvi_mask] = (comp["B08"][ndvi_mask] - comp["B04"][ndvi_mask]) / den[ndvi_mask]
+            salvar_preview(
+                resultado["B02"],
+                resultado["B03"],
+                resultado["B04"],
+                resultado["VALID"],
+                preview,
+                saida_px,
+                pmin,
+                pmax,
+                qualidade,
+            )
 
             if salvar_npz:
+                pasta_patch.mkdir(parents=True, exist_ok=True)
                 np.savez_compressed(
-                    pasta_patch / "dados.npz",
-                    B02=comp["B02"],
-                    B03=comp["B03"],
-                    B04=comp["B04"],
-                    B08=comp["B08"],
-                    NDVI=ndvi,
-                    VALID_MASK=filled.astype(np.uint8),
+                    pasta_patch / "dados_cientificos.npz",
+                    B02=resultado["B02"],
+                    B03=resultado["B03"],
+                    B04=resultado["B04"],
+                    B08=resultado["B08"],
+                    NDVI=resultado["NDVI"],
+                    VALID=resultado["VALID"],
+                    OBS_COUNT=resultado["OBS_COUNT"],
                 )
 
-            b = patch["bbox_wgs84"]
+            fontes = resultado["fontes"]
+            bbox_patch = patch["bbox_wgs84"]
+            ndvi_valid = resultado["NDVI"][resultado["VALID"]]
+            ndvi_valid = ndvi_valid[np.isfinite(ndvi_valid)]
+            ndvi_medio = float(ndvi_valid.mean()) if ndvi_valid.size else float("nan")
+
             registros.append(
                 {
                     "patch_id": patch_id,
                     "spatial_id": spatial_id,
-                    "mes": mes,
-                    "minlon": round(b[0], 7),
-                    "minlat": round(b[1], 7),
-                    "maxlon": round(b[2], 7),
-                    "maxlat": round(b[3], 7),
-                    "valid_data_pct": round(valid_pct, 4),
-                    "obs_2plus_pct": round(obs2_pct, 4),
-                    "fontes_usadas": json.dumps(fontes_usadas, ensure_ascii=False),
+                    "mes": mes_nome,
+                    "row": r,
+                    "col": c,
+                    "minlon": f"{bbox_patch[0]:.8f}",
+                    "minlat": f"{bbox_patch[1]:.8f}",
+                    "maxlon": f"{bbox_patch[2]:.8f}",
+                    "maxlat": f"{bbox_patch[3]:.8f}",
+                    "clean_coverage_pct": f"{coverage:.4f}",
+                    "obs_2plus_pct": f"{resultado['obs2_pct']:.4f}",
+                    "fontes_usadas": len(fontes),
+                    "source_ids": ";".join(f["item_id"] for f in fontes),
+                    "source_dates": ";".join(f["data"] for f in fontes),
+                    "ndvi_medio": "" if not np.isfinite(ndvi_medio) else f"{ndvi_medio:.6f}",
                     "preview": str(preview.relative_to(ROOT)),
                     "label": "",
                     "observacao": "",
                 }
             )
             aprovados_mes += 1
-            aprovados_total += 1
-            print(f"  [OK] {patch_id} | limpo={valid_pct:.2f}% | 2+obs={obs2_pct:.1f}% | fontes={len(fontes_usadas)}")
+            total_ok += 1
+            print(
+                f"  [OK] {patch_id} | limpo={coverage:.2f}% | "
+                f"2+obs={resultado['obs2_pct']:.1f}% | fontes={len(fontes)}"
+            )
 
-        if aprovados_mes:
-            meses_ok += 1
-        print(f"  Resultado {mes}: {aprovados_mes} patches aprovados")
+        print(
+            f"  Resumo {mes_nome}: avaliados={avaliados_mes} | "
+            f"aprovados={aprovados_mes}"
+        )
 
     catalogo.parent.mkdir(parents=True, exist_ok=True)
     campos = [
-        "patch_id", "spatial_id", "mes", "minlon", "minlat", "maxlon", "maxlat",
-        "valid_data_pct", "obs_2plus_pct", "fontes_usadas", "preview", "label", "observacao",
+        "patch_id",
+        "spatial_id",
+        "mes",
+        "row",
+        "col",
+        "minlon",
+        "minlat",
+        "maxlon",
+        "maxlat",
+        "clean_coverage_pct",
+        "obs_2plus_pct",
+        "fontes_usadas",
+        "source_ids",
+        "source_dates",
+        "ndvi_medio",
+        "preview",
+        "label",
+        "observacao",
     ]
     with catalogo.open("w", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=campos)
-        w.writeheader()
-        w.writerows(registros)
+        writer = csv.DictWriter(f, fieldnames=campos)
+        writer.writeheader()
+        writer.writerows(registros)
 
     resumo = {
         "gerado_em_utc": datetime.now(timezone.utc).isoformat(),
-        "fonte": fonte["nome"],
-        "colecao": fonte["colecao"],
+        "pipeline": "planetary_computer_data_api_npy",
+        "usa_rasterio_gdal": False,
+        "salva_cena_completa": False,
         "aoi": aoi["nome"],
-        "periodo": [inicio, fim],
-        "meses_com_resultado": meses_ok,
-        "patches_aprovados": aprovados_total,
-        "patches_descartados_por_nuvem_ou_dados": descartados_total,
-        "cenas_completas_salvas": 0,
-        "salvar_npz": salvar_npz,
+        "periodo_inicio": inicio,
+        "periodo_fim": fim,
+        "mes_filtro": args.mes or "todos",
+        "patch_px": tamanho,
+        "resolucao_m": resolucao,
+        "cobertura_limpa_min_pct": clean_min,
+        "meses_processados": meses_processados,
+        "patches_aprovados": total_ok,
+        "patches_descartados": total_descartados,
+        "erros_api_estimados": total_erros_api,
+        "erros_amostra": erros_amostra,
         "catalogo": str(catalogo.relative_to(ROOT)),
     }
     resumo_path.parent.mkdir(parents=True, exist_ok=True)
     resumo_path.write_text(json.dumps(resumo, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    print("\n=== RESUMO ===")
+    print("\n" + "=" * 82)
+    print(" RESUMO")
+    print("=" * 82)
     print(json.dumps(resumo, ensure_ascii=False, indent=2))
-    return 0 if aprovados_total > 0 else 1
+
+    if total_ok == 0:
+        print("\n[ERRO] Nenhum patch aprovado. Não foram geradas imagens para catalogação.")
+        if erros_amostra:
+            print("Primeiros erros da Data API:")
+            for erro in erros_amostra:
+                print(f"  - {erro}")
+        return 1
+
+    print(f"\n[OK] Previews: {pasta_saida}")
+    print(f"[OK] Catálogo: {catalogo}")
+    return 0
 
 
 if __name__ == "__main__":
