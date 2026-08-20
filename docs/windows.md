@@ -10,14 +10,14 @@ A versão Windows é distribuída como um pacote portátil. Não é necessário 
 4. Configure área, período, bandas e filtros pela interface.
 5. Use **Executar operação** para catalogar, baixar ou sincronizar.
 
-Não mova somente o `Sentinel2-MT.exe`. A pasta `_internal`, o arquivo `sentinel2-mt.exe` e a pasta `config` fazem parte da aplicação.
+Não mova somente o `Sentinel2-MT.exe`. A pasta `_internal`, o arquivo `Sentinel2-MT-Core.exe` e a pasta `config` fazem parte da aplicação.
 
 ## Arquivos principais
 
 ```text
 Sentinel2-MT-Windows/
 ├── Sentinel2-MT.exe            # interface gráfica
-├── sentinel2-mt.exe            # motor CLI/TUI usado pela GUI
+├── Sentinel2-MT-Core.exe       # motor CLI/TUI usado pela GUI
 ├── sentinel2-mt-config.yaml    # configuração padrão para uso direto do motor
 ├── config/
 │   ├── config.yaml
@@ -35,12 +35,12 @@ Para sincronizar com o Google Drive, use um JSON OAuth do tipo **Desktop app** e
 O motor também pode ser usado pelo PowerShell ou Prompt de Comando:
 
 ```powershell
-.\sentinel2-mt.exe --version
-.\sentinel2-mt.exe --help
-.\sentinel2-mt.exe --baixar --max-itens 1
+.\Sentinel2-MT-Core.exe --version
+.\Sentinel2-MT-Core.exe --help
+.\Sentinel2-MT-Core.exe --baixar --max-itens 1
 ```
 
-Sem argumentos, `sentinel2-mt.exe` abre a interface de terminal (TUI).
+Sem argumentos, `Sentinel2-MT-Core.exe` abre a interface de terminal (TUI).
 
 ## Windows SmartScreen
 
