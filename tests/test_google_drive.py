@@ -67,6 +67,15 @@ class AutenticadorFake:
         return self.servico
 
 
+class FluxoOAuthFake:
+    def __init__(self) -> None:
+        self.parametros = None
+
+    def run_local_server(self, **parametros):
+        self.parametros = parametros
+        return "credenciais-fake"
+
+
 def configuracao_temporaria(raiz: Path) -> ConfiguracaoProjeto:
     return ConfiguracaoProjeto(
         raiz=raiz,
@@ -89,6 +98,14 @@ def configuracao_temporaria(raiz: Path) -> ConfiguracaoProjeto:
 class TestLotesGoogleDrive(TestCase):
     def test_usa_escopo_de_menor_privilegio(self) -> None:
         self.assertEqual(AutenticadorGoogleDrive.ESCOPO, ("https://www.googleapis.com/auth/drive.file",))
+
+    def test_oauth_sempre_solicita_selecao_da_conta(self) -> None:
+        fluxo = FluxoOAuthFake()
+
+        credenciais = AutenticadorGoogleDrive._autorizar_no_navegador(fluxo)
+
+        self.assertEqual(credenciais, "credenciais-fake")
+        self.assertEqual(fluxo.parametros, {"port": 0, "prompt": "select_account"})
 
     def test_divide_sem_perder_ordem(self) -> None:
         lotes = [list(lote) for lote in dividir_em_lotes([1, 2, 3, 4, 5], 2)]

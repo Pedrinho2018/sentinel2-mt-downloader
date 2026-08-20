@@ -42,6 +42,10 @@ o status **Testing**, o Google permite o login apenas das contas cadastradas em
 adicionar ali o mesmo e-mail escolhido no navegador. Não é necessário gerar
 outro JSON depois dessa liberação.
 
+O login sempre exibe o seletor de contas. Escolha exatamente o e-mail incluído
+em **Test users**; estar conectado a outra conta Google no navegador não concede
+acesso ao projeto.
+
 Essa restrição é aplicada pelo Google antes de o programa receber o token e não
 pode ser removida pelo código local. Para distribuição pública, o proprietário
 deve publicar/verificar o aplicativo. Consulte a
