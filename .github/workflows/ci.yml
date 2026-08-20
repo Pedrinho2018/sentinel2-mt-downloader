@@ -32,8 +32,5 @@ jobs:
 
       - name: Validate command imports
         run: |
-          python src/baixar_series_temporais.py --help > /dev/null
-          python src/gerar_mosaicos_temporais.py --help > /dev/null
-          python src/gerar_patches.py --help > /dev/null
-          python src/validar_dataset.py --help > /dev/null
+          python src/gerar_dataset_soja.py --help > /dev/null
           python src/pipeline.py --help > /dev/null
