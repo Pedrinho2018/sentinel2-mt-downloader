@@ -32,7 +32,7 @@ preview:
   tamanho_max_px: 1600
   percentil_min: 2
   percentil_max: 98
-  qualidade_jpeg: 92
+  qualidade_jpeg: 94
 
 download:
   pasta: "data/sentinel2"
@@ -44,13 +44,18 @@ download:
 
 # Segunda etapa: transforma cenas grandes em unidades adequadas para catalogação.
 patches:
-  # Sentinel-2 a 10 m: 256 px ~= 2,56 km por lado.
-  tamanho_px: 256
-  passo_px: 256
+  # Sentinel-2 a 10 m: 128 px ~= 1,28 km por lado.
+  # Mantém contexto suficiente do talhão, mas aproxima bastante a inspeção visual.
+  tamanho_px: 128
+  passo_px: 128
 
-  # O filtro por patch é mais rígido que o filtro da cena.
-  nuvem_max_pct: 10
-  dados_validos_min_pct: 85
+  # A imagem científica continua 128x128. Apenas o JPG de visualização é ampliado
+  # para facilitar a catalogação no LabelImage, sem criar informação nova.
+  preview_saida_px: 768
+
+  # Filtro por patch mais rígido que o filtro da cena.
+  nuvem_max_pct: 8
+  dados_validos_min_pct: 90
 
   # Para evitar multiplicar o armazenamento, por padrão exportamos apenas o JPG
   # para rotulagem. O CSV guarda janela/coordenadas para recuperar as bandas originais.
