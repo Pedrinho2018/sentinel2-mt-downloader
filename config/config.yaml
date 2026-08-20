@@ -1,27 +1,33 @@
 fonte:
   nome: "Microsoft Planetary Computer"
   stac_url: "https://planetarycomputer.microsoft.com/api/stac/v1"
+  data_api_url: "https://planetarycomputer.microsoft.com/api/data/v1"
   colecao: "sentinel-2-l2a"
 
 projeto:
   nome: "Dataset Sentinel-2 para soja em Mato Grosso"
-  objetivo: "Gerar recortes limpos, pequenos e temporalmente rastreáveis para catalogação e ML."
+  objetivo: "Gerar patches limpos, pequenos e temporalmente rastreáveis para catalogação e ML."
 
-# TESTE CONTROLADO: centro-norte de Mato Grosso, em área agrícola.
-# Não aumente para o estado inteiro antes de validar visualmente os patches.
 aoi:
   nome: "Centro-Norte MT - teste soja"
   bbox_wgs84: [-56.00, -13.00, -55.30, -12.20]
-  crs_metrico: "EPSG:31981"   # SIRGAS 2000 / UTM 21S
+  crs_metrico: "EPSG:31981"
 
 periodo:
   inicio: "2025-09-01"
   fim: "2026-04-30"
 
 busca:
-  # Filtro inicial só evita cenas absurdamente ruins. A decisão final é por patch.
-  nuvem_cena_max_pct: 45
-  max_cenas_por_mes: 8
+  # O percentual da cena inteira serve apenas como pré-filtro.
+  # A decisão final é feita pixel a pixel pelo SCL dentro de cada patch.
+  nuvem_cena_max_pct: 80
+  max_itens_busca_mes: 120
+  max_cenas_por_patch: 10
+
+http:
+  timeout_segundos: 90
+  tentativas: 4
+  backoff_segundos: 1.0
 
 patches:
   tamanho_px: 128
@@ -29,18 +35,13 @@ patches:
   passo_px: 128
   max_patches_por_mes: 20
 
-  # Só salva patch praticamente limpo.
+  # Patch final praticamente sem contaminação.
   cobertura_limpa_min_pct: 99.5
 
-  # Quantidade mínima de observações limpas disponíveis por pixel, usada apenas
-  # como métrica de confiança. O patch não é reprovado por isso no primeiro teste.
-  obs_2plus_min_pct: 0
-
-  # Classes SCL aceitas como superfície observável.
-  # 4 = vegetação, 5 = não vegetado/solo, 6 = água.
+  # Classes SCL observáveis: vegetação, solo/não vegetado e água.
   scl_classes_validas: [4, 5, 6]
 
-  # Margem adicional em volta de pixels não confiáveis, na grade final de 10 m.
+  # Borda de segurança contra nuvem/sombra na grade final.
   margem_nuvem_px: 4
 
   preview_saida_px: 768
@@ -48,8 +49,7 @@ patches:
   percentil_min: 2
   percentil_max: 98
 
-  # Para não encher o PC: por padrão salva só preview + catálogo.
-  # Os dados científicos podem ser regenerados pelos IDs/fontes registrados.
+  # Para o teste salva só preview + catálogo. Depois podemos ativar os arrays científicos.
   salvar_npz: false
 
 saida:
