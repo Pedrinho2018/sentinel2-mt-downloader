@@ -1,55 +1,48 @@
 stac:
-  url: "https://data.inpe.br/bdc/stac/v1/"
-  colecao: "S2-16D-2"
-
+  url: https://data.inpe.br/bdc/stac/v1/
+  colecao: S2-16D-2
 area:
-  nome: "Mato Grosso"
-  uf: "MT"
-  # Bounding box aproximada em WGS84: [oeste, sul, leste, norte]
-  bbox: [-61.65, -18.05, -50.20, -7.30]
-
-# Safra usada como ponto de partida. Pode ser sobrescrita pela linha de comando.
+  nome: Mato Grosso
+  uf: MT
+  bbox:
+  - -61.65
+  - -18.05
+  - -50.2
+  - -7.3
 periodo:
-  inicio: "2025-09-01"
-  fim: "2026-04-30"
-
-# Bandas científicas úteis para análise de vegetação/soja.
+  inicio: '2025-09-01'
+  fim: '2026-04-30'
 bandas:
-  - "B02"
-  - "B03"
-  - "B04"
-  - "B08"
-  - "NDVI"
-
-# Antes das bandas grandes, o programa baixa SCL e mede nuvem/sombra.
+- B02
+- B03
+- B04
+- B08
+- NDVI
 qualidade:
   filtrar_nuvens: true
-  nuvem_max_pct: 20
+  nuvem_max_pct: 20.0
   manter_scl: true
-
 preview:
   gerar_rgb: true
   tamanho_max_px: 1600
-  percentil_min: 2
-  percentil_max: 98
+  percentil_min: 2.0
+  percentil_max: 98.0
   qualidade_jpeg: 92
-
 download:
-  pasta: "data/sentinel2"
-  catalogo: "catalogo/catalogo_imagens.csv"
+  pasta: data/sentinel2
+  catalogo: catalogo/catalogo_imagens.csv
   timeout_segundos: 120
   chunk_mb: 1
-  # Quantidade de cenas BOAS desejadas no teste.
   max_itens_teste: 5
-  # Evita procurar indefinidamente se houver muita nuvem.
   max_candidatos_teste: 40
-
-# Sincronização opcional das imagens diretamente pela API do Google Drive/OAuth.
 sincronizacao:
-  pasta_remota: "${PASTA_REMOTA:-sentinel2-mt}"
-  oauth_json: "${GOOGLE_OAUTH_JSON:-}"
-  token_json: "${GOOGLE_TOKEN_JSON:-config/google-token.json}"
-  # Opcional: ID de uma pasta existente; por padrão usa Meu Drive.
-  pasta_id: "${GOOGLE_PASTA_ID:-root}"
+  pasta_remota: sentinel2-mt
+  oauth_json: ${GOOGLE_OAUTH_JSON:-}
+  token_json: ${GOOGLE_TOKEN_JSON:-config/google-token.json}
+  pasta_id: ${GOOGLE_PASTA_ID:-root}
   tamanho_lote: 100
-  extensoes: [".tif", ".tiff", ".jpg", ".jpeg"]
+  extensoes:
+  - .tif
+  - .tiff
+  - .jpg
+  - .jpeg
