@@ -9,65 +9,41 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 
 
-def executar(etapa: str, argumentos: list[str]) -> None:
-    comando = [sys.executable, str(SRC / etapa), *argumentos]
-    print("\n" + "=" * 84)
-    print("EXECUTANDO:", " ".join(comando))
-    print("=" * 84)
-    subprocess.run(comando, cwd=ROOT, check=True)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Pipeline correto: L2A real -> mosaico mensal limpo -> patches -> validação."
+        description="Pipeline enxuto para soja: lê Sentinel-2 L2A remoto e salva somente patches limpos."
     )
-    parser.add_argument("--tile", help="MGRS tile específico, ex.: 21LWG")
-    parser.add_argument("--max-tiles", type=int, default=1, help="0 = todos")
-    parser.add_argument("--max-patches", type=int, default=20, help="0 = todos")
-    parser.add_argument(
-        "--cenas-por-mes",
-        type=int,
-        default=None,
-        help="Sobrescreve config. Se omitido, usa config/config.yaml (padrão atual: 6).",
-    )
-    parser.add_argument("--limpar", action="store_true", help="Limpa mosaicos/patches antes de recriar")
-    parser.add_argument("--pular-download", action="store_true")
+    parser.add_argument("--inicio")
+    parser.add_argument("--fim")
+    parser.add_argument("--mes", help="Processa apenas YYYY-MM")
+    parser.add_argument("--max-patches", type=int, default=20, help="Limite de patches por mês; 0 = todos")
+    parser.add_argument("--limpar", action="store_true")
     args = parser.parse_args()
 
+    cmd = [sys.executable, str(SRC / "gerar_dataset_soja.py"), "--max-patches", str(args.max_patches)]
+    if args.inicio:
+        cmd += ["--inicio", args.inicio]
+    if args.fim:
+        cmd += ["--fim", args.fim]
+    if args.mes:
+        cmd += ["--mes", args.mes]
+    if args.limpar:
+        cmd.append("--limpar")
+
+    print("=" * 84)
+    print("PIPELINE SOJA | sem download de cenas completas")
+    print("=" * 84)
+    print("Executando:", " ".join(cmd))
+
     try:
-        if not args.pular_download:
-            serie_args = ["--max-tiles", str(args.max_tiles)]
-            if args.cenas_por_mes is not None:
-                serie_args += ["--cenas-por-mes", str(args.cenas_por_mes)]
-            if args.tile:
-                serie_args += ["--tile", args.tile]
-            executar("baixar_series_temporais.py", serie_args)
-
-        mosaico_args: list[str] = []
-        if args.tile:
-            mosaico_args += ["--tile", args.tile]
-        if args.limpar:
-            mosaico_args.append("--limpar-saida")
-        executar("gerar_mosaicos_temporais.py", mosaico_args)
-
-        patch_args = ["--max-patches", str(args.max_patches)]
-        if args.tile:
-            patch_args += ["--tile", args.tile]
-        if args.limpar:
-            patch_args.append("--limpar-saida")
-        executar("gerar_patches.py", patch_args)
-
-        executar("validar_dataset.py", [])
-
+        subprocess.run(cmd, cwd=ROOT, check=True)
     except subprocess.CalledProcessError as exc:
-        print(f"\n[PIPELINE INTERROMPIDO] Uma etapa retornou código {exc.returncode}.")
+        print(f"\n[ERRO] Pipeline interrompido com código {exc.returncode}.")
         return exc.returncode or 1
 
-    print("\n" + "=" * 84)
-    print("PIPELINE L2A TEMPORAL CONCLUÍDO")
-    print("=" * 84)
-    print("Confira primeiro data/mosaicos_temporais/*/*/preview_rgb.jpg")
-    print("Depois confira os patches em data/patches/.")
+    print("\n[OK] Pipeline concluído.")
+    print("Confira: data/patches_soja/<MES>/<PATCH>/preview_rgb.jpg")
+    print("Catálogo: catalogo/catalogo_soja.csv")
     return 0
 
 
