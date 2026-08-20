@@ -170,13 +170,35 @@ def salvar_csv(caminho: Path, registros: list[dict]) -> None:
         w.writerows(registros)
 
 
+def caminhos_bandas_existentes(item, pasta_item: Path, bandas: list[str]) -> dict[str, Path]:
+    caminhos: dict[str, Path] = {}
+    for banda in bandas:
+        asset = localizar_asset(item, banda)
+        if asset is None:
+            continue
+        caminhos[banda] = pasta_item / f"{banda}{extensao(asset.href)}"
+    return caminhos
+
+
+def cena_ja_completa(item, pasta_item: Path, bandas: list[str]) -> bool:
+    caminhos = caminhos_bandas_existentes(item, pasta_item, bandas)
+    if len(caminhos) != len(bandas):
+        return False
+    return all(caminho.exists() and caminho.stat().st_size > 0 for caminho in caminhos.values())
+
+
 def argumentos() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Downloader Sentinel-2 MT com filtro automático de nuvens via SCL.")
     p.add_argument("--config", type=Path, default=CONFIG_PADRAO)
     p.add_argument("--inicio")
     p.add_argument("--fim")
-    p.add_argument("--max-itens", type=int, help="Quantidade de cenas APROVADAS; 0 = todas.")
+    p.add_argument("--max-itens", type=int, help="Quantidade de cenas NOVAS aprovadas; 0 = todas.")
     p.add_argument("--baixar", action="store_true")
+    p.add_argument(
+        "--reusar-existentes",
+        action="store_true",
+        help="Conta cenas já baixadas na meta. Por padrão elas são ignoradas e a busca continua.",
+    )
     return p.parse_args()
 
 
@@ -206,15 +228,16 @@ def main() -> int:
     print("=" * 72)
     print(f"Período: {inicio} até {fim} | coleção: {colecao}")
     print(f"Filtro de nuvens/sombra: {'SIM' if filtro_nuvem else 'NÃO'} | máximo: {nuvem_max:.1f}%")
-    print(f"Meta: {'todas' if max_itens == 0 else max_itens} cena(s) aprovada(s)")
+    print(f"Meta: {'todas' if max_itens == 0 else max_itens} cena(s) NOVA(S) aprovada(s)")
+    print(f"Cenas já baixadas: {'contam na meta' if args.reusar_existentes else 'serão puladas'}")
 
     cliente = Client.open(cfg["stac"]["url"])
     busca = cliente.search(collections=[colecao], bbox=cfg["area"]["bbox"], datetime=f"{inicio}/{fim}")
     sessao = requests.Session()
-    sessao.headers.update({"User-Agent": "sentinel2-mt-downloader/1.2"})
+    sessao.headers.update({"User-Agent": "sentinel2-mt-downloader/1.3"})
 
     registros: list[dict] = []
-    aprovadas = descartadas = candidatos = previews = erros = 0
+    aprovadas = descartadas = candidatos = previews = erros = existentes_ignoradas = 0
 
     for item in busca.items():
         if max_itens > 0 and aprovadas >= max_itens:
@@ -227,6 +250,12 @@ def main() -> int:
         data = data_item(item)
         pasta_item = pasta / data / item.id
         print(f"\n[CANDIDATO {candidatos}] {item.id} | {data}")
+
+        if args.baixar and not args.reusar_existentes and cena_ja_completa(item, pasta_item, bandas):
+            existentes_ignoradas += 1
+            print("  [JÁ EXISTE] cena completa no disco; não conta na meta. Procurando outra...")
+            registros.append(reg(item, data, colecao, "CENA", "nao_avaliado", "ignorada_ja_existente", arquivo=str(pasta_item.relative_to(ROOT))))
+            continue
 
         if not args.baixar:
             registros.append(reg(item, data, colecao, "CENA", "nao_avaliado", "candidato_catalogado"))
@@ -260,9 +289,9 @@ def main() -> int:
                 registros.append(reg(item, data, colecao, "SCL", "erro", "erro_qualidade", scl.href, str(scl_path.relative_to(ROOT)), str(exc)))
                 continue
 
-        aprovadas += 1
-        print(f"  [APROVADA {aprovadas}] baixando bandas científicas...")
+        print(f"  [APROVADA] qualidade OK; preparando bandas científicas...")
         arquivos: dict[str, Path] = {}
+        houve_download_novo = False
 
         for banda in bandas:
             asset = localizar_asset(item, banda)
@@ -272,6 +301,7 @@ def main() -> int:
             destino = pasta_item / f"{banda}{extensao(asset.href)}"
             try:
                 status = baixar(sessao, asset.href, destino, timeout, chunk_mb)
+                houve_download_novo |= status == "baixado"
                 arquivos[banda] = destino
                 print(f"  [OK] {banda}: {status}")
                 erro = ""
@@ -293,14 +323,21 @@ def main() -> int:
                 print(f"  [ERRO] preview: {exc}")
                 registros.append(reg(item, data, colecao, "RGB_PREVIEW", nuvem, "erro_preview", arquivo=str(preview.relative_to(ROOT)), erro=str(exc)))
 
+        if houve_download_novo or args.reusar_existentes:
+            aprovadas += 1
+            print(f"  [META] cena contabilizada. Novas aprovadas: {aprovadas}")
+        else:
+            existentes_ignoradas += 1
+            print("  [JÁ EXISTE] nenhuma banda nova foi baixada; procurando outra cena...")
+
     salvar_csv(csv_path, registros)
 
     print("\n" + "=" * 72)
-    print(f"Candidatos: {candidatos} | aprovadas: {aprovadas} | descartadas por nuvem: {descartadas}")
-    print(f"Previews: {previews} | erros: {erros}")
+    print(f"Candidatos: {candidatos} | novas aprovadas: {aprovadas} | descartadas por nuvem: {descartadas}")
+    print(f"Já existentes ignoradas: {existentes_ignoradas} | previews: {previews} | erros: {erros}")
     print(f"Catálogo: {csv_path.relative_to(ROOT)}")
     if not args.baixar:
-        print("Modo seguro: para avaliar nuvem e baixar 1 cena boa:")
+        print("Modo seguro: para avaliar nuvem e baixar 1 cena nova boa:")
         print("python src\\baixar_inpe_mt.py --baixar --max-itens 1")
     return 0 if erros == 0 else 2
 
