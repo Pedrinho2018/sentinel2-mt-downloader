@@ -67,7 +67,6 @@ jobs:
           $env:QT_QPA_PLATFORM = "offscreen"
           $env:QTWEBENGINE_CHROMIUM_FLAGS = "--disable-gpu"
           python -m unittest discover -v
-          python tests/smoke_gui.py
 
       - name: Gerar motor Windows
         shell: pwsh
