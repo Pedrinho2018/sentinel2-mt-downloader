@@ -25,12 +25,25 @@ download:
   timeout_segundos: 180
   chunk_mb: 2
 
+  # Compatibilidade com o downloader antigo/auxiliar.
+  catalogo: "catalogo/catalogo_imagens.csv"
+  max_itens_teste: 5
+  max_candidatos_teste: 120
+
+# Compatibilidade com baixar_inpe_mt.py. Não define a lógica do novo pipeline temporal.
+qualidade:
+  filtrar_nuvens: true
+  nuvem_max_pct: 5
+
 # NOVO ESTÁGIO 1: coleta uma série temporal por tile e mês.
 # Uma cena individual NÃO precisa estar quase sem nuvens, porque ela será usada
 # como fonte para preencher pixels limpos no mosaico temporal.
 serie_temporal:
   catalogo: "catalogo/catalogo_series.csv"
   resumo: "catalogo/resumo_series.json"
+
+  # Tile já validado nos testes anteriores; usado apenas no teste de 1 tile.
+  tile_teste: "014018"
 
   # S2-16D geralmente oferece cerca de duas composições por mês.
   cenas_por_tile_mes: 2
@@ -92,6 +105,8 @@ patches:
   resumo: "catalogo/resumo_patches.json"
 
 preview:
+  gerar_rgb: true
+  tamanho_max_px: 1600
   percentil_min: 2
   percentil_max: 98
   qualidade_jpeg: 95
