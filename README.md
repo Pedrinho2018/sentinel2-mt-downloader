@@ -1,91 +1,92 @@
 # Sentinel-2 MT Downloader
 
-Pipeline reproduzível de preparação de imagens Sentinel-2 para análise agrícola em Mato Grosso, usando a API STAC do INPE/Brazil Data Cube.
+Pipeline reproduzível de preparação de imagens Sentinel-2 para análise agrícola e catalogação de soja em Mato Grosso.
 
-## Objetivo
+## Fonte correta
 
-Preparar dados para análise de áreas agrícolas e vigor da vegetação ao longo da safra, com foco posterior em soja.
+O pipeline principal usa agora:
 
-O projeto não usa mais uma cena isolada como unidade final de catalogação. A estratégia atual é:
+- INPE / Brazil Data Cube STAC
+- coleção `S2_L2A-1`
+- Sentinel-2 Level-2A Surface Reflectance
+- Cloud Optimized GeoTIFF (COG)
+- cenas reais disponibilizadas continuamente
 
-1. coletar **séries temporais por tile e mês**;
-2. combinar observações complementares;
-3. gerar **mosaicos mensais sem nuvens por best-pixel**;
-4. recortar os mosaicos em patches georreferenciados;
-5. auditar o dataset antes da rotulagem no LabelImage.
+O antigo `S2-16D-2` não é mais usado como fonte principal para remover nuvens. Ele já é uma composição de 16 dias e, em meses muito nublados, oferece poucas observações independentes.
 
-## Fonte de dados
-
-- INPE / Brazil Data Cube
-- STAC: `https://data.inpe.br/bdc/stac/v1/`
-- Coleção: `S2-16D-2`
-- Sentinel-2 MSI Level-2A
-- Resolução espacial principal: 10 m
-- Composição temporal de origem: 16 dias
-
-## Bandas utilizadas
-
-- `B02` = azul
-- `B03` = verde
-- `B04` = vermelho
-- `B08` = infravermelho próximo
-- `NDVI` = índice de vegetação
-- `SCL` = classificação de cena usada para rejeitar nuvens/sombras pixel a pixel
-
-## Arquitetura atual
+## Pipeline
 
 ```text
-INPE / Sentinel-2
-        ↓
-Catálogo STAC
-        ↓
-Agrupamento por TILE + MÊS
-        ↓
-2 cenas-fonte por tile/mês
-        ↓
-SCL de cada fonte
-        ↓
-┌────────────────────────────────────────────┐
-│ MOSAICO TEMPORAL MENSAL                   │
-│                                            │
-│ Para cada pixel:                           │
-│ - descarta nuvem/sombra/cirrus             │
-│ - aplica margem de segurança               │
-│ - escolhe observação limpa mais próxima    │
-│   do centro do mês                         │
-│ - mantém todas as bandas da MESMA fonte    │
-└────────────────────────────────────────────┘
-        ↓
-B02 / B03 / B04 / B08 / NDVI
-VALID_MASK / OBS_COUNT / SOURCE_INDEX
-        ↓
-Mosaico mensal limpo e rastreável
-        ↓
-Patches 128x128 px (~1,28 km)
-        ↓
-Preview 768x768 para catalogação
-        ↓
-Catálogo CSV georreferenciado
-        ↓
-Auditoria
-        ↓
-LabelImage / rotulagem
+S2_L2A-1
+   ↓
+cenas reais por MGRS tile + mês
+   ↓
+avalia até 10 candidatos/mês
+   ↓
+guarda até 6 fontes complementares/mês
+   ↓
+SCL 20 m -> grade 10 m (nearest)
+   ↓
+buffer de ~60 m em nuvem/sombra
+   ↓
+best-pixel limpo
+   ↓
+B02 + B03 + B04 + B08 da MESMA cena-fonte
+   ↓
+NDVI calculado pelo pipeline
+   ↓
+mosaico mensal
+   ↓
+VALID_MASK + OBS_COUNT + SOURCE_INDEX
+   ↓
+somente mosaico APROVADO
+   ↓
+patches 128x128
+   ↓
+preview 768x768
+   ↓
+LabelImage
 ```
 
-## Por que mudar para mosaico temporal?
+## Bandas
 
-Uma cena com poucos por cento de nuvem ainda pode apresentar milhares de pequenas nuvens espalhadas. Para agricultura isso atrapalha a inspeção visual e pode contaminar o treinamento.
+Baixadas das cenas L2A:
 
-O mosaico temporal resolve isso usando **datas complementares do mesmo tile**. Quando uma data está nublada em um pixel, o pipeline tenta preencher aquele local com uma observação limpa de outra data do mesmo mês.
+- `B02` azul - 10 m
+- `B03` verde - 10 m
+- `B04` vermelho - 10 m
+- `B08` infravermelho próximo - 10 m
+- `SCL` classificação da cena - 20 m
 
-Importante: o algoritmo não escolhe o maior NDVI nem o pixel "mais verde", porque isso enviesaria a análise de vigor. A prioridade é a observação limpa mais próxima do centro do mês, preservando coerência temporal e espectral.
+Gerada pelo pipeline:
+
+- `NDVI`, calculado com B08 e B04 depois da composição
+
+## Controle de nuvens
+
+O SCL de 20 m é reprojetado para a mesma grade dos dados de 10 m por vizinho mais próximo.
+
+São rejeitados:
+
+- sombra de nuvem;
+- pixel não classificado/suspeito;
+- nuvem média;
+- nuvem alta;
+- cirrus;
+- neve/gelo.
+
+Depois é aplicado um buffer de aproximadamente 60 m ao redor da contaminação.
+
+## Coerência espectral
+
+Quando um pixel limpo é escolhido, `B02`, `B03`, `B04` e `B08` vêm todos da mesma passagem Sentinel-2. O pipeline não mistura bandas de datas diferentes no mesmo pixel.
+
+Também não escolhe o maior NDVI, evitando favorecer artificialmente vegetação mais verde.
 
 ## Produtos do mosaico
 
-Cada `tile/mês` gera:
-
 ```text
-data/mosaicos_temporais/TILE/YYYY-MM/
+data/mosaicos_temporais/<MGRS_TILE>/<AAAA-MM>/
 ├── B02.tif
 ├── B03.tif
 ├── B04.tif
@@ -98,134 +99,70 @@ data/mosaicos_temporais/TILE/YYYY-MM/
 └── metadata.json
 ```
 
-- `VALID_MASK`: pixels que receberam uma observação limpa.
-- `OBS_COUNT`: quantidade de observações limpas disponíveis para cada pixel.
-- `SOURCE_INDEX`: identifica qual cena forneceu o pixel usado no mosaico.
-- `metadata.json`: mapeia cada índice para a cena/data original.
+- `VALID_MASK`: pixels realmente preenchidos com observação limpa.
+- `OBS_COUNT`: número de observações limpas disponíveis para cada pixel.
+- `SOURCE_INDEX`: de qual cena real veio o pixel escolhido.
+- `metadata.json`: mapeia o índice para item STAC, data e qualidade.
 
-Isso permite rastrear qualquer pixel de volta à fonte.
+Mosaico com menos de 98% de cobertura válida recebe status `cobertura_insuficiente` e **não gera patches**.
 
-## Estrutura do repositório
+## Patches para LabelImage
+
+- 128x128 pixels Sentinel-2
+- aproximadamente 1,28 x 1,28 km
+- preview 768x768 por nearest-neighbor
+- pelo menos 99,5% de pixels válidos
+- pelo menos 20% do patch com duas ou mais observações limpas disponíveis
+
+## Teste
+
+```powershell
+git checkout feature/pipeline-premium
+git pull
+pip install -r requirements.txt
+python src\pipeline.py --max-tiles 1 --max-patches 20 --limpar
+```
+
+No teste, o sistema usa um recorte pequeno no centro-norte de Mato Grosso e escolhe automaticamente o MGRS tile com melhor cobertura temporal.
+
+Primeiro confira os mosaicos:
+
+```text
+data/mosaicos_temporais/<TILE>/<AAAA-MM>/preview_rgb.jpg
+```
+
+Depois confira os patches:
+
+```text
+data/patches/<TILE>/<AAAA-MM>/<PATCH_ID>/preview_rgb.jpg
+```
+
+## Estrutura
 
 ```text
 sentinel2-mt-downloader/
 ├── config/
 │   └── config.yaml
-├── data/                         # ignorado pelo Git
-│   ├── sentinel2/
-│   ├── mosaicos_temporais/
-│   └── patches/
-├── catalogo/
-│   ├── catalogo_series.csv
-│   ├── catalogo_mosaicos.csv
-│   ├── catalogo_patches.csv
-│   └── relatorio_validacao.json
 ├── src/
 │   ├── baixar_series_temporais.py
 │   ├── gerar_mosaicos_temporais.py
 │   ├── gerar_patches.py
 │   ├── validar_dataset.py
-│   ├── pipeline.py
-│   └── baixar_inpe_mt.py        # downloader antigo/auxiliar
-├── requirements.txt
-└── README.md
+│   └── pipeline.py
+├── data/
+│   ├── sentinel2_l2a/
+│   ├── mosaicos_temporais/
+│   └── patches/
+├── catalogo/
+└── requirements.txt
 ```
-
-## Instalação
-
-```powershell
-python -m venv .venv
-.venv\Scripts\activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-## Teste recomendado
-
-Primeiro atualize a branch:
-
-```powershell
-git pull
-```
-
-Depois execute o pipeline completo em **um tile** e limite o resultado a 20 patches:
-
-```powershell
-python src\pipeline.py --max-tiles 1 --max-patches 20 --limpar
-```
-
-O processo executa automaticamente:
-
-```text
-baixar_series_temporais.py
-        ↓
-gerar_mosaicos_temporais.py
-        ↓
-gerar_patches.py
-        ↓
-validar_dataset.py
-```
-
-## Executar por etapas
-
-### 1. Coletar a série temporal
-
-```powershell
-python src\baixar_series_temporais.py --max-tiles 1 --cenas-por-mes 2
-```
-
-Para um tile específico:
-
-```powershell
-python src\baixar_series_temporais.py --tile 014018 --max-tiles 1 --cenas-por-mes 2
-```
-
-### 2. Gerar mosaicos mensais
-
-```powershell
-python src\gerar_mosaicos_temporais.py --limpar-saida
-```
-
-### 3. Gerar 20 patches de teste
-
-```powershell
-python src\gerar_patches.py --max-patches 20 --limpar-saida
-```
-
-### 4. Auditar
-
-```powershell
-python src\validar_dataset.py
-```
-
-## Catálogo dos patches
-
-Cada patch registra:
-
-- `patch_id`;
-- `mosaic_id`;
-- tile;
-- mês da safra;
-- offsets no mosaico;
-- tamanho;
-- percentual de dados válidos;
-- percentual de pixels com duas ou mais observações limpas;
-- bounding box WGS84;
-- coordenada central;
-- caminho do preview;
-- `label`;
-- `observacao`.
 
 ## Escala futura
 
-Depois de validar visualmente um tile, o mesmo pipeline pode ser expandido para todos os tiles de Mato Grosso:
+Só depois da validação visual do tile de teste:
 
 ```powershell
 python src\pipeline.py --max-tiles 0 --max-patches 0
 ```
 
-**Não execute o estado inteiro antes de validar o teste.** O volume de dados pode ser muito grande.
-
-## GitHub
-
-GeoTIFFs e previews permanecem fora do Git. O repositório guarda código, configuração, catálogos e metodologia para tornar o dataset reproduzível sem usar o GitHub como armazenamento de imagens de satélite.
+Não rode Mato Grosso inteiro antes de validar qualidade e armazenamento.
