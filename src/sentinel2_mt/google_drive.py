@@ -145,12 +145,17 @@ class SincronizadorGoogleDrive:
         consulta = f"name = '{nome}' and '{pai_id}' in parents and trashed = false"
         encontrados = service.files().list(q=consulta, spaces="drive", fields="files(id)", pageSize=1).execute().get("files", [])
         media = MediaFileUpload(str(arquivo), resumable=True)
-        if encontrados:
-            service.files().update(fileId=encontrados[0]["id"], media_body=media).execute()
-            return "atualizado"
-        metadados = {"name": arquivo.name, "parents": [pai_id]}
-        service.files().create(body=metadados, media_body=media, fields="id").execute()
-        return "enviado"
+        try:
+            if encontrados:
+                service.files().update(fileId=encontrados[0]["id"], media_body=media).execute()
+                return "atualizado"
+            metadados = {"name": arquivo.name, "parents": [pai_id]}
+            service.files().create(body=metadados, media_body=media, fields="id").execute()
+            return "enviado"
+        finally:
+            stream = media.stream()
+            if stream is not None and not stream.closed:
+                stream.close()
 
     @staticmethod
     def _valor_query(valor: str) -> str:

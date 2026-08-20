@@ -1,0 +1,150 @@
+name: Windows x64
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "config/**"
+      - "packaging/**"
+      - "requirements*.txt"
+      - ".github/workflows/windows.yml"
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Aplicação Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 45
+
+    steps:
+      - name: Baixar código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-gui.txt
+            requirements-build.txt
+
+      - name: Instalar dependências
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-gui.txt -r requirements-build.txt
+
+      - name: Validar versão
+        id: version
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "src"
+          $version = (python -c "from sentinel2_mt import __version__; print(__version__)").Trim()
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $tagVersion = $env:GITHUB_REF_NAME.TrimStart("v")
+            if ($tagVersion -ne $version) {
+              Write-Error "A tag pede $tagVersion, mas o código declara $version"
+              exit 2
+            }
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Executar testes
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "src"
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:QTWEBENGINE_CHROMIUM_FLAGS = "--disable-gpu"
+          python -m unittest discover -v
+
+      - name: Gerar motor Windows
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean packaging/sentinel2-mt.spec
+          .\dist\sentinel2-mt.exe --version
+          .\dist\sentinel2-mt.exe --help
+
+      - name: Gerar interface Windows
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean packaging/sentinel2-mt-gui-windows.spec
+          if (-not (Test-Path ".\dist\Sentinel2-MT-Windows\Sentinel2-MT.exe")) {
+            Write-Error "Executável gráfico não foi gerado."
+            exit 3
+          }
+
+      - name: Montar pacote portátil
+        shell: pwsh
+        run: |
+          $destino = ".\dist\Sentinel2-MT-Windows"
+          Copy-Item ".\dist\sentinel2-mt.exe" "$destino\Sentinel2-MT-Core.exe" -Force
+          New-Item -ItemType Directory -Path "$destino\config" -Force | Out-Null
+          Copy-Item ".\config\config.yaml" "$destino\config\config.yaml" -Force
+          Copy-Item ".\config\google-oauth.example.json" "$destino\config\google-oauth.example.json" -Force
+          Copy-Item ".\config\config.yaml" "$destino\sentinel2-mt-config.yaml" -Force
+          Copy-Item ".\docs\windows.md" "$destino\LEIA-ME-WINDOWS.md" -Force
+
+          foreach ($obrigatorio in @("Sentinel2-MT.exe", "Sentinel2-MT-Core.exe")) {
+            if (-not (Test-Path "$destino\$obrigatorio")) {
+              Write-Error "Arquivo obrigatório ausente: $obrigatorio"
+              exit 4
+            }
+          }
+
+          $hashes = @()
+          foreach ($arquivo in @("$destino\Sentinel2-MT.exe", "$destino\Sentinel2-MT-Core.exe")) {
+            $hash = Get-FileHash $arquivo -Algorithm SHA256
+            $hashes += "$($hash.Hash.ToLower())  $([IO.Path]::GetFileName($arquivo))"
+          }
+          $hashes | Set-Content "$destino\SHA256SUMS.txt" -Encoding ascii
+
+      - name: Compactar pacote
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          New-Item -ItemType Directory -Path ".\release" -Force | Out-Null
+          $zip = ".\release\sentinel2-mt-$version-windows-x64.zip"
+          Compress-Archive -Path ".\dist\Sentinel2-MT-Windows\*" -DestinationPath $zip -CompressionLevel Optimal -Force
+          $hash = Get-FileHash $zip -Algorithm SHA256
+          "$($hash.Hash.ToLower())  $([IO.Path]::GetFileName($zip))" | Set-Content "$zip.sha256" -Encoding ascii
+
+      - name: Armazenar artefato Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentinel2-mt-${{ steps.version.outputs.version }}-windows-x64
+          path: |
+            release/*.zip
+            release/*.sha256
+          if-no-files-found: error
+
+      - name: Publicar na GitHub Release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $encontrada = $false
+          for ($i = 0; $i -lt 12; $i++) {
+            gh release view $tag *> $null
+            if ($LASTEXITCODE -eq 0) {
+              $encontrada = $true
+              break
+            }
+            Start-Sleep -Seconds 10
+          }
+          if (-not $encontrada) {
+            gh release create $tag --verify-tag --title "Sentinel-2 MT ${{ steps.version.outputs.version }}" --generate-notes
+          }
+          gh release upload $tag release/* --clobber

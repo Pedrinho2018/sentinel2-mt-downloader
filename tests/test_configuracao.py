@@ -34,7 +34,10 @@ class TestConfiguracaoProjeto(TestCase):
             self.assertEqual(config.area.uf, "MT")
             self.assertEqual(config.download.timeout_segundos, 120)
             self.assertEqual(config.sincronizacao.tamanho_lote, 100)
-            self.assertEqual(config.caminho(config.download.pasta), raiz / "data/imagens")
+            self.assertEqual(
+                config.caminho(config.download.pasta).resolve(),
+                (raiz / "data/imagens").resolve(),
+            )
 
     def test_rejeita_bbox_incompleto(self) -> None:
         with TemporaryDirectory() as temporario:
