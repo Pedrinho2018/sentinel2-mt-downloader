@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import argparse
 import csv
-from datetime import datetime
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -17,11 +18,12 @@ from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PADRAO = ROOT / "config" / "config.yaml"
+CLASSES_NUVEM_SOMBRA = np.array([3, 7, 8, 9, 10, 11], dtype=np.uint8)
 
 
 def carregar_config(caminho: Path) -> dict:
-    with caminho.open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    with caminho.open("r", encoding="utf-8") as arquivo:
+        return yaml.safe_load(arquivo)
 
 
 def data_item(item) -> str:
@@ -64,7 +66,7 @@ def baixar(sessao: requests.Session, url: str, destino: Path, timeout: int, chun
         with sessao.get(url, stream=True, timeout=(20, timeout)) as resposta:
             resposta.raise_for_status()
             tamanho = int(resposta.headers.get("content-length", 0))
-            with parcial.open("wb") as f, tqdm(
+            with parcial.open("wb") as arquivo, tqdm(
                 total=tamanho or None,
                 unit="B",
                 unit_scale=True,
@@ -74,7 +76,7 @@ def baixar(sessao: requests.Session, url: str, destino: Path, timeout: int, chun
             ) as barra:
                 for parte in resposta.iter_content(chunk_size=bloco):
                     if parte:
-                        f.write(parte)
+                        arquivo.write(parte)
                         barra.update(len(parte))
         parcial.replace(destino)
         return "baixado"
@@ -83,29 +85,27 @@ def baixar(sessao: requests.Session, url: str, destino: Path, timeout: int, chun
         raise
 
 
-def percentual_nuvem_scl(caminho: Path, amostra_px: int = 1400) -> float:
-    # SCL: 3 sombra; 7 suspeito/não classificado; 8/9 nuvem; 10 cirrus; 11 neve/gelo.
-    classes_ruins = np.array([3, 7, 8, 9, 10, 11], dtype=np.uint8)
+def percentual_nuvem_scl(caminho: Path, amostra_px: int = 1800) -> float:
     with rasterio.open(caminho) as src:
         escala = min(1.0, amostra_px / max(src.width, src.height))
-        w = max(1, int(src.width * escala))
-        h = max(1, int(src.height * escala))
-        scl = src.read(1, out_shape=(h, w), resampling=Resampling.nearest)
+        largura = max(1, int(src.width * escala))
+        altura = max(1, int(src.height * escala))
+        scl = src.read(1, out_shape=(altura, largura), resampling=Resampling.nearest)
 
     validos = (scl != 0) & (scl != 1)
     total = int(validos.sum())
     if total == 0:
         return 100.0
-    ruins = validos & np.isin(scl, classes_ruins)
+    ruins = validos & np.isin(scl, CLASSES_NUVEM_SOMBRA)
     return float(ruins.sum() * 100.0 / total)
 
 
 def ler_preview(caminho: Path, max_px: int) -> tuple[np.ndarray, np.ndarray]:
     with rasterio.open(caminho) as src:
         escala = min(1.0, max_px / max(src.width, src.height))
-        w = max(1, int(src.width * escala))
-        h = max(1, int(src.height * escala))
-        dados = src.read(1, out_shape=(h, w), resampling=Resampling.bilinear).astype(np.float32)
+        largura = max(1, int(src.width * escala))
+        altura = max(1, int(src.height * escala))
+        dados = src.read(1, out_shape=(altura, largura), resampling=Resampling.bilinear).astype(np.float32)
         mascara = np.isfinite(dados)
         mascara &= dados != (src.nodata if src.nodata is not None else 0)
     return dados, mascara
@@ -117,7 +117,7 @@ def stretch(dados: np.ndarray, mascara: np.ndarray, pmin: float, pmax: float) ->
     if valores.size == 0:
         return saida
     minimo, maximo = np.percentile(valores, [pmin, pmax])
-    if maximo <= minimo:
+    if not np.isfinite(minimo) or not np.isfinite(maximo) or maximo <= minimo:
         return saida
     norm = np.clip((dados - minimo) / (maximo - minimo), 0, 1)
     saida = (norm * 255).astype(np.uint8)
@@ -132,7 +132,7 @@ def gerar_rgb(arquivos: dict[str, Path], destino: Path, cfg: dict) -> str:
     max_px = int(cfg.get("tamanho_max_px", 1600))
     pmin = float(cfg.get("percentil_min", 2))
     pmax = float(cfg.get("percentil_max", 98))
-    qualidade = int(cfg.get("qualidade_jpeg", 92))
+    qualidade = int(cfg.get("qualidade_jpeg", 94))
 
     r0, mr = ler_preview(arquivos["B04"], max_px)
     g0, mg = ler_preview(arquivos["B03"], max_px)
@@ -140,11 +140,55 @@ def gerar_rgb(arquivos: dict[str, Path], destino: Path, cfg: dict) -> str:
     if r0.shape != g0.shape or r0.shape != b0.shape:
         return "dimensoes_incompativeis"
 
-    m = mr & mg & mb
-    rgb = np.dstack((stretch(r0, m, pmin, pmax), stretch(g0, m, pmin, pmax), stretch(b0, m, pmin, pmax)))
+    mascara = mr & mg & mb
+    rgb = np.dstack(
+        (
+            stretch(r0, mascara, pmin, pmax),
+            stretch(g0, mascara, pmin, pmax),
+            stretch(b0, mascara, pmin, pmax),
+        )
+    )
     destino.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(rgb, mode="RGB").save(destino, "JPEG", quality=max(1, min(100, qualidade)), optimize=True)
     return "gerado"
+
+
+def caminhos_bandas(item, pasta_item: Path, bandas: list[str]) -> dict[str, Path]:
+    caminhos: dict[str, Path] = {}
+    for banda in bandas:
+        asset = localizar_asset(item, banda)
+        if asset is not None:
+            caminhos[banda] = pasta_item / f"{banda}{extensao(asset.href)}"
+    return caminhos
+
+
+def cena_completa(item, pasta_item: Path, bandas: list[str]) -> bool:
+    caminhos = caminhos_bandas(item, pasta_item, bandas)
+    return len(caminhos) == len(bandas) and all(p.exists() and p.stat().st_size > 0 for p in caminhos.values())
+
+
+def marcar_qualidade(pasta_item: Path, item, data: str, nuvem_pct: float, limite_pct: float, aprovada: bool) -> Path:
+    qualidade = pasta_item / "qualidade"
+    qualidade.mkdir(parents=True, exist_ok=True)
+    aprovado = qualidade / "aprovada.json"
+    rejeitado = qualidade / "rejeitada.json"
+    if aprovada:
+        rejeitado.unlink(missing_ok=True)
+        destino = aprovado
+    else:
+        aprovado.unlink(missing_ok=True)
+        destino = rejeitado
+
+    payload = {
+        "scene_id": item.id,
+        "data": data,
+        "nuvem_sombra_pct": round(float(nuvem_pct), 4),
+        "limite_pct": float(limite_pct),
+        "aprovada": bool(aprovada),
+        "avaliado_em_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    destino.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return destino
 
 
 def reg(item, data: str, colecao: str, banda: str, nuvem, status: str, url: str = "", arquivo: str = "", erro: str = "") -> dict:
@@ -164,42 +208,25 @@ def reg(item, data: str, colecao: str, banda: str, nuvem, status: str, url: str 
 def salvar_csv(caminho: Path, registros: list[dict]) -> None:
     caminho.parent.mkdir(parents=True, exist_ok=True)
     campos = ["id", "data", "colecao", "banda", "nuvem_pct", "url", "arquivo", "status", "erro"]
-    with caminho.open("w", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=campos)
-        w.writeheader()
-        w.writerows(registros)
-
-
-def caminhos_bandas_existentes(item, pasta_item: Path, bandas: list[str]) -> dict[str, Path]:
-    caminhos: dict[str, Path] = {}
-    for banda in bandas:
-        asset = localizar_asset(item, banda)
-        if asset is None:
-            continue
-        caminhos[banda] = pasta_item / f"{banda}{extensao(asset.href)}"
-    return caminhos
-
-
-def cena_ja_completa(item, pasta_item: Path, bandas: list[str]) -> bool:
-    caminhos = caminhos_bandas_existentes(item, pasta_item, bandas)
-    if len(caminhos) != len(bandas):
-        return False
-    return all(caminho.exists() and caminho.stat().st_size > 0 for caminho in caminhos.values())
+    with caminho.open("w", newline="", encoding="utf-8-sig") as arquivo:
+        writer = csv.DictWriter(arquivo, fieldnames=campos)
+        writer.writeheader()
+        writer.writerows(registros)
 
 
 def argumentos() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Downloader Sentinel-2 MT com filtro automático de nuvens via SCL.")
-    p.add_argument("--config", type=Path, default=CONFIG_PADRAO)
-    p.add_argument("--inicio")
-    p.add_argument("--fim")
-    p.add_argument("--max-itens", type=int, help="Quantidade de cenas NOVAS aprovadas; 0 = todas.")
-    p.add_argument("--baixar", action="store_true")
-    p.add_argument(
+    parser = argparse.ArgumentParser(description="Downloader Sentinel-2 MT com seleção rigorosa por SCL.")
+    parser.add_argument("--config", type=Path, default=CONFIG_PADRAO)
+    parser.add_argument("--inicio")
+    parser.add_argument("--fim")
+    parser.add_argument("--max-itens", type=int, help="Quantidade de cenas NOVAS aprovadas; 0 = todas.")
+    parser.add_argument("--baixar", action="store_true")
+    parser.add_argument(
         "--reusar-existentes",
         action="store_true",
-        help="Conta cenas já baixadas na meta. Por padrão elas são ignoradas e a busca continua.",
+        help="Cenas existentes aprovadas também contam na meta. Sem esta opção elas são apenas revalidadas.",
     )
-    return p.parse_args()
+    return parser.parse_args()
 
 
 def main() -> int:
@@ -214,33 +241,32 @@ def main() -> int:
     pcfg = cfg.get("preview", {})
 
     max_itens = int(dcfg.get("max_itens_teste", 5)) if args.max_itens is None else args.max_itens
-    max_candidatos = int(dcfg.get("max_candidatos_teste", 40))
-    nuvem_max = float(qcfg.get("nuvem_max_pct", 20))
+    max_candidatos = int(dcfg.get("max_candidatos_teste", 120))
+    nuvem_max = float(qcfg.get("nuvem_max_pct", 5))
     filtro_nuvem = bool(qcfg.get("filtrar_nuvens", True))
-    manter_scl = bool(qcfg.get("manter_scl", True))
     timeout = int(dcfg.get("timeout_segundos", 120))
     chunk_mb = int(dcfg.get("chunk_mb", 1))
     pasta = ROOT / dcfg["pasta"]
     csv_path = ROOT / dcfg["catalogo"]
 
-    print("=" * 72)
-    print(" Sentinel-2 MT Downloader | seleção para análise agrícola")
-    print("=" * 72)
+    print("=" * 76)
+    print(" Sentinel-2 MT Downloader | seleção rigorosa para análise agrícola")
+    print("=" * 76)
     print(f"Período: {inicio} até {fim} | coleção: {colecao}")
-    print(f"Filtro de nuvens/sombra: {'SIM' if filtro_nuvem else 'NÃO'} | máximo: {nuvem_max:.1f}%")
+    print(f"Filtro da cena: {'SIM' if filtro_nuvem else 'NÃO'} | máximo: {nuvem_max:.1f}% nuvem/sombra")
     print(f"Meta: {'todas' if max_itens == 0 else max_itens} cena(s) NOVA(S) aprovada(s)")
-    print(f"Cenas já baixadas: {'contam na meta' if args.reusar_existentes else 'serão puladas'}")
+    print("Cenas já baixadas serão REVALIDADAS antes de entrar no pipeline de patches.")
 
     cliente = Client.open(cfg["stac"]["url"])
     busca = cliente.search(collections=[colecao], bbox=cfg["area"]["bbox"], datetime=f"{inicio}/{fim}")
     sessao = requests.Session()
-    sessao.headers.update({"User-Agent": "sentinel2-mt-downloader/1.3"})
+    sessao.headers.update({"User-Agent": "sentinel2-mt-downloader/1.4"})
 
     registros: list[dict] = []
-    aprovadas = descartadas = candidatos = previews = erros = existentes_ignoradas = 0
+    novas = descartadas = candidatos = previews = erros = existentes_aprovadas = 0
 
     for item in busca.items():
-        if max_itens > 0 and aprovadas >= max_itens:
+        if max_itens > 0 and novas >= max_itens:
             break
         candidatos += 1
         if max_itens > 0 and candidatos > max_candidatos:
@@ -249,17 +275,11 @@ def main() -> int:
 
         data = data_item(item)
         pasta_item = pasta / data / item.id
-        print(f"\n[CANDIDATO {candidatos}] {item.id} | {data}")
-
-        if args.baixar and not args.reusar_existentes and cena_ja_completa(item, pasta_item, bandas):
-            existentes_ignoradas += 1
-            print("  [JÁ EXISTE] cena completa no disco; não conta na meta. Procurando outra...")
-            registros.append(reg(item, data, colecao, "CENA", "nao_avaliado", "ignorada_ja_existente", arquivo=str(pasta_item.relative_to(ROOT))))
-            continue
+        completa_antes = cena_completa(item, pasta_item, bandas)
+        print(f"\n[CANDIDATO {candidatos}] {item.id} | {data}{' | já baixada' if completa_antes else ''}")
 
         if not args.baixar:
             registros.append(reg(item, data, colecao, "CENA", "nao_avaliado", "candidato_catalogado"))
-            aprovadas += 1
             continue
 
         nuvem: float | str = "nao_avaliado"
@@ -275,70 +295,74 @@ def main() -> int:
                 status_scl = baixar(sessao, scl.href, scl_path, timeout, chunk_mb)
                 nuvem = percentual_nuvem_scl(scl_path)
                 print(f"  [QUALIDADE] nuvem/sombra estimada: {nuvem:.2f}%")
-                if nuvem > nuvem_max:
-                    descartadas += 1
-                    print(f"  [DESCARTADA] acima de {nuvem_max:.1f}%; bandas grandes não serão baixadas.")
-                    registros.append(reg(item, data, colecao, "SCL", nuvem, "descartada_nuvem", scl.href, str(scl_path.relative_to(ROOT))))
-                    if not manter_scl:
-                        scl_path.unlink(missing_ok=True)
-                    continue
+                aprovada = nuvem <= nuvem_max
+                marcador = marcar_qualidade(pasta_item, item, data, nuvem, nuvem_max, aprovada)
                 registros.append(reg(item, data, colecao, "SCL", nuvem, status_scl, scl.href, str(scl_path.relative_to(ROOT))))
+                registros.append(reg(item, data, colecao, "QUALIDADE", nuvem, "aprovada" if aprovada else "rejeitada", arquivo=str(marcador.relative_to(ROOT))))
+                if not aprovada:
+                    descartadas += 1
+                    print(f"  [DESCARTADA] acima de {nuvem_max:.1f}%. Não será usada para patches.")
+                    continue
             except Exception as exc:
                 erros += 1
-                print(f"  [ERRO] SCL: {exc}")
-                registros.append(reg(item, data, colecao, "SCL", "erro", "erro_qualidade", scl.href, str(scl_path.relative_to(ROOT)), str(exc)))
+                print(f"  [ERRO] avaliação SCL: {exc}")
+                registros.append(reg(item, data, colecao, "SCL", "erro", "erro_qualidade", erro=str(exc)))
                 continue
 
-        print(f"  [APROVADA] qualidade OK; preparando bandas científicas...")
-        arquivos: dict[str, Path] = {}
-        houve_download_novo = False
+        if completa_antes:
+            existentes_aprovadas += 1
+            print("  [APROVADA EXISTENTE] cena revalidada e marcada para o gerador de patches.")
+            if args.reusar_existentes:
+                novas += 1
+                print(f"  [META] existente contabilizada. Aprovadas na execução: {novas}")
+            continue
 
+        print("  [APROVADA] baixando/completando bandas científicas...")
+        arquivos: dict[str, Path] = {}
+        falhou = False
         for banda in bandas:
             asset = localizar_asset(item, banda)
             if asset is None:
+                falhou = True
                 registros.append(reg(item, data, colecao, banda, nuvem, "asset_nao_encontrado"))
                 continue
             destino = pasta_item / f"{banda}{extensao(asset.href)}"
             try:
                 status = baixar(sessao, asset.href, destino, timeout, chunk_mb)
-                houve_download_novo |= status == "baixado"
                 arquivos[banda] = destino
                 print(f"  [OK] {banda}: {status}")
-                erro = ""
+                registros.append(reg(item, data, colecao, banda, nuvem, status, asset.href, str(destino.relative_to(ROOT))))
             except Exception as exc:
-                status, erro = "erro_download", str(exc)
+                falhou = True
                 erros += 1
                 print(f"  [ERRO] {banda}: {exc}")
-            registros.append(reg(item, data, colecao, banda, nuvem, status, asset.href, str(destino.relative_to(ROOT)), erro))
+                registros.append(reg(item, data, colecao, banda, nuvem, "erro_download", asset.href, str(destino.relative_to(ROOT)), str(exc)))
+
+        if falhou or not cena_completa(item, pasta_item, bandas):
+            print("  [INCOMPLETA] cena não conta na meta.")
+            continue
 
         if bool(pcfg.get("gerar_rgb", True)):
             preview = pasta_item / "preview_rgb.jpg"
             try:
-                status = gerar_rgb(arquivos, preview, pcfg)
-                previews += int(status == "gerado")
-                print(f"  [PREVIEW] {status}: {preview.name}")
-                registros.append(reg(item, data, colecao, "RGB_PREVIEW", nuvem, status, arquivo=str(preview.relative_to(ROOT))))
+                status_preview = gerar_rgb(arquivos, preview, pcfg)
+                previews += int(status_preview == "gerado")
+                print(f"  [PREVIEW] {status_preview}: {preview.name}")
+                registros.append(reg(item, data, colecao, "RGB_PREVIEW", nuvem, status_preview, arquivo=str(preview.relative_to(ROOT))))
             except Exception as exc:
                 erros += 1
                 print(f"  [ERRO] preview: {exc}")
-                registros.append(reg(item, data, colecao, "RGB_PREVIEW", nuvem, "erro_preview", arquivo=str(preview.relative_to(ROOT)), erro=str(exc)))
+                registros.append(reg(item, data, colecao, "RGB_PREVIEW", nuvem, "erro_preview", erro=str(exc)))
 
-        if houve_download_novo or args.reusar_existentes:
-            aprovadas += 1
-            print(f"  [META] cena contabilizada. Novas aprovadas: {aprovadas}")
-        else:
-            existentes_ignoradas += 1
-            print("  [JÁ EXISTE] nenhuma banda nova foi baixada; procurando outra cena...")
+        novas += 1
+        print(f"  [META] nova cena limpa contabilizada: {novas}")
 
     salvar_csv(csv_path, registros)
 
-    print("\n" + "=" * 72)
-    print(f"Candidatos: {candidatos} | novas aprovadas: {aprovadas} | descartadas por nuvem: {descartadas}")
-    print(f"Já existentes ignoradas: {existentes_ignoradas} | previews: {previews} | erros: {erros}")
+    print("\n" + "=" * 76)
+    print(f"Candidatos: {candidatos} | novas aprovadas: {novas} | existentes revalidadas: {existentes_aprovadas}")
+    print(f"Descartadas por nuvem: {descartadas} | previews novos: {previews} | erros: {erros}")
     print(f"Catálogo: {csv_path.relative_to(ROOT)}")
-    if not args.baixar:
-        print("Modo seguro: para avaliar nuvem e baixar 1 cena nova boa:")
-        print("python src\\baixar_inpe_mt.py --baixar --max-itens 1")
     return 0 if erros == 0 else 2
 
 
