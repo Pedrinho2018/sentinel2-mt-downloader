@@ -17,8 +17,8 @@ from PIL import Image
 from pyproj import Transformer
 from pystac_client import Client
 from rasterio.enums import Resampling
+from rasterio.transform import from_bounds as transform_from_bounds
 from rasterio.vrt import WarpedVRT
-from rasterio.windows import from_bounds
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PADRAO = ROOT / "config" / "config.yaml"
@@ -62,7 +62,9 @@ def read_patch(item, asset_key: str, bounds_m, crs_alvo: str, shape: tuple[int, 
     if asset is None:
         return None
 
-    href = asset.href
+    altura, largura = shape
+    target_transform = transform_from_bounds(*bounds_m, largura, altura)
+
     try:
         with rasterio.Env(
             GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
@@ -70,18 +72,17 @@ def read_patch(item, asset_key: str, bounds_m, crs_alvo: str, shape: tuple[int, 
             GDAL_HTTP_MULTIRANGE="YES",
             GDAL_HTTP_MERGE_CONSECUTIVE_RANGES="YES",
         ):
-            with rasterio.open(href) as src:
-                with WarpedVRT(src, crs=crs_alvo, resampling=resampling) as vrt:
-                    win = from_bounds(*bounds_m, transform=vrt.transform)
-                    data = vrt.read(
-                        1,
-                        window=win,
-                        out_shape=shape,
-                        resampling=resampling,
-                        boundless=True,
-                        fill_value=0,
-                    )
-                    return data
+            with rasterio.open(asset.href) as src:
+                with WarpedVRT(
+                    src,
+                    crs=crs_alvo,
+                    transform=target_transform,
+                    width=largura,
+                    height=altura,
+                    resampling=resampling,
+                    nodata=0,
+                ) as vrt:
+                    return vrt.read(1)
     except Exception:
         return None
 
