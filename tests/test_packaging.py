@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 from unittest import TestCase
 
@@ -25,3 +26,21 @@ class TestPackaging(TestCase):
         conteudo = (ROOT / "packaging/config.yaml").read_text(encoding="utf-8")
         self.assertNotIn("client_secret", conteudo)
         self.assertNotIn("client_id", conteudo)
+
+    def test_spec_resolve_entrypoint_a_partir_da_pasta_packaging(self) -> None:
+        caminho_spec = ROOT / "packaging/sentinel2-mt.spec"
+        arvore = ast.parse(caminho_spec.read_text(encoding="utf-8"))
+        atribuicao_root = next(
+            no
+            for no in arvore.body
+            if isinstance(no, ast.Assign)
+            and any(isinstance(alvo, ast.Name) and alvo.id == "ROOT" for alvo in no.targets)
+        )
+        expressao = ast.Expression(body=atribuicao_root.value)
+        raiz_calculada = eval(
+            compile(expressao, str(caminho_spec), "eval"),
+            {"Path": Path, "SPECPATH": str(caminho_spec.parent)},
+        )
+
+        self.assertEqual(raiz_calculada, ROOT)
+        self.assertTrue((raiz_calculada / "src/main.py").is_file())
