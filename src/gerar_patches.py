@@ -240,7 +240,7 @@ def main() -> int:
 
                     row = y // passo
                     col = x // passo
-                    patch_id = f"{scene_id}_r{row:04d}_c{col:04d}"
+                    patch_id = f"{scene_id}_p{tamanho}_r{row:04d}_c{col:04d}"
                     pasta_patch = destino_base / data / scene_id / patch_id
                     preview = pasta_patch / "preview_rgb.jpg"
 
