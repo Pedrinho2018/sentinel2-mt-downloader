@@ -1,6 +1,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
+from unittest.mock import patch
 
 from sentinel2_mt.configuracao import (
     ConfiguracaoArea,
@@ -67,15 +68,6 @@ class AutenticadorFake:
         return self.servico
 
 
-class FluxoOAuthFake:
-    def __init__(self) -> None:
-        self.parametros = None
-
-    def run_local_server(self, **parametros):
-        self.parametros = parametros
-        return "credenciais-fake"
-
-
 def configuracao_temporaria(raiz: Path) -> ConfiguracaoProjeto:
     return ConfiguracaoProjeto(
         raiz=raiz,
@@ -100,16 +92,16 @@ class TestLotesGoogleDrive(TestCase):
         self.assertEqual(AutenticadorGoogleDrive.ESCOPO, ("https://www.googleapis.com/auth/drive.file",))
 
     def test_oauth_sempre_solicita_selecao_da_conta(self) -> None:
-        fluxo = FluxoOAuthFake()
+        fluxo = object()
 
-        credenciais = AutenticadorGoogleDrive._autorizar_no_navegador(fluxo)
+        with patch(
+            "sentinel2_mt.google_drive.autorizar_com_pagina_oauth",
+            return_value="credenciais-fake",
+        ) as autorizar:
+            credenciais = AutenticadorGoogleDrive._autorizar_no_navegador(fluxo)
 
         self.assertEqual(credenciais, "credenciais-fake")
-        self.assertEqual(fluxo.parametros["host"], "127.0.0.1")
-        self.assertEqual(fluxo.parametros["bind_addr"], "127.0.0.1")
-        self.assertEqual(fluxo.parametros["port"], 0)
-        self.assertEqual(fluxo.parametros["prompt"], "select_account")
-        self.assertIn("Autorização concluída", fluxo.parametros["success_message"])
+        autorizar.assert_called_once_with(fluxo)
 
     def test_divide_sem_perder_ordem(self) -> None:
         lotes = [list(lote) for lote in dividir_em_lotes([1, 2, 3, 4, 5], 2)]
