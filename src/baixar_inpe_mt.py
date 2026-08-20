@@ -6,9 +6,13 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
+import numpy as np
+import rasterio
 import requests
 import yaml
+from PIL import Image
 from pystac_client import Client
+from rasterio.enums import Resampling
 from tqdm import tqdm
 
 
@@ -100,6 +104,96 @@ def baixar_arquivo(
         raise
 
 
+def ler_banda_para_preview(caminho: Path, tamanho_max_px: int) -> tuple[np.ndarray, np.ndarray]:
+    with rasterio.open(caminho) as src:
+        maior_dimensao = max(src.width, src.height)
+        escala = min(1.0, tamanho_max_px / maior_dimensao)
+        largura = max(1, int(src.width * escala))
+        altura = max(1, int(src.height * escala))
+
+        dados = src.read(
+            1,
+            out_shape=(altura, largura),
+            resampling=Resampling.bilinear,
+        ).astype(np.float32)
+
+        mascara = np.isfinite(dados)
+        if src.nodata is not None:
+            mascara &= dados != src.nodata
+        else:
+            mascara &= dados != 0
+
+    return dados, mascara
+
+
+def esticar_banda(
+    dados: np.ndarray,
+    mascara: np.ndarray,
+    percentil_min: float,
+    percentil_max: float,
+) -> np.ndarray:
+    saida = np.zeros(dados.shape, dtype=np.uint8)
+
+    validos = dados[mascara]
+    if validos.size == 0:
+        return saida
+
+    minimo, maximo = np.percentile(validos, [percentil_min, percentil_max])
+
+    if not np.isfinite(minimo) or not np.isfinite(maximo) or maximo <= minimo:
+        minimo = float(validos.min())
+        maximo = float(validos.max())
+
+    if maximo <= minimo:
+        return saida
+
+    normalizado = (dados - minimo) / (maximo - minimo)
+    normalizado = np.clip(normalizado, 0, 1)
+    saida = (normalizado * 255).astype(np.uint8)
+    saida[~mascara] = 0
+    return saida
+
+
+def gerar_preview_rgb(
+    arquivos_item: dict[str, Path],
+    destino: Path,
+    tamanho_max_px: int,
+    percentil_min: float,
+    percentil_max: float,
+    qualidade_jpeg: int,
+) -> str:
+    necessarias = ["B04", "B03", "B02"]
+    faltando = [banda for banda in necessarias if banda not in arquivos_item or not arquivos_item[banda].exists()]
+
+    if faltando:
+        return f"faltando_{'_'.join(faltando)}"
+
+    vermelho, mask_r = ler_banda_para_preview(arquivos_item["B04"], tamanho_max_px)
+    verde, mask_g = ler_banda_para_preview(arquivos_item["B03"], tamanho_max_px)
+    azul, mask_b = ler_banda_para_preview(arquivos_item["B02"], tamanho_max_px)
+
+    if vermelho.shape != verde.shape or vermelho.shape != azul.shape:
+        return "dimensoes_incompativeis"
+
+    mascara = mask_r & mask_g & mask_b
+
+    r = esticar_banda(vermelho, mascara, percentil_min, percentil_max)
+    g = esticar_banda(verde, mascara, percentil_min, percentil_max)
+    b = esticar_banda(azul, mascara, percentil_min, percentil_max)
+
+    rgb = np.dstack((r, g, b))
+    destino.parent.mkdir(parents=True, exist_ok=True)
+
+    Image.fromarray(rgb, mode="RGB").save(
+        destino,
+        format="JPEG",
+        quality=max(1, min(100, qualidade_jpeg)),
+        optimize=True,
+    )
+
+    return "gerado"
+
+
 def salvar_catalogo(caminho: Path, registros: list[dict]) -> None:
     caminho.parent.mkdir(parents=True, exist_ok=True)
 
@@ -162,6 +256,13 @@ def main() -> int:
     timeout = int(config["download"].get("timeout_segundos", 120))
     chunk_mb = int(config["download"].get("chunk_mb", 1))
 
+    preview_cfg = config.get("preview", {})
+    gerar_rgb = bool(preview_cfg.get("gerar_rgb", True))
+    tamanho_max_px = int(preview_cfg.get("tamanho_max_px", 1600))
+    percentil_min = float(preview_cfg.get("percentil_min", 2))
+    percentil_max = float(preview_cfg.get("percentil_max", 98))
+    qualidade_jpeg = int(preview_cfg.get("qualidade_jpeg", 92))
+
     print("=" * 62)
     print(" Sentinel-2 MT Downloader | INPE / Brazil Data Cube")
     print("=" * 62)
@@ -169,6 +270,7 @@ def main() -> int:
     print(f"Coleção:   {colecao}")
     print(f"Período:   {inicio} até {fim}")
     print(f"Bandas:    {', '.join(bandas)}")
+    print(f"Preview:   {'RGB automático' if gerar_rgb else 'desativado'}")
     print(f"Download:  {'SIM' if args.baixar else 'NÃO (somente catálogo)'}")
     print(f"Limite:    {'TODOS' if max_itens == 0 else max_itens}")
     print()
@@ -198,7 +300,7 @@ def main() -> int:
 
     registros: list[dict] = []
     sessao = requests.Session()
-    sessao.headers.update({"User-Agent": "sentinel2-mt-downloader/1.0"})
+    sessao.headers.update({"User-Agent": "sentinel2-mt-downloader/1.1"})
 
     for indice, item in enumerate(itens, start=1):
         data = data_item(item)
@@ -206,6 +308,9 @@ def main() -> int:
 
         if indice == 1:
             print("Assets disponíveis:", ", ".join(sorted(item.assets.keys())))
+
+        arquivos_item: dict[str, Path] = {}
+        pasta_item = pasta_download / data / item.id
 
         for banda in bandas:
             asset = localizar_asset(item, banda)
@@ -227,7 +332,7 @@ def main() -> int:
                 continue
 
             extensao = extensao_da_url(asset.href)
-            destino = pasta_download / data / item.id / f"{banda}{extensao}"
+            destino = pasta_item / f"{banda}{extensao}"
             status = "catalogado"
             erro = ""
 
@@ -240,6 +345,7 @@ def main() -> int:
                         timeout=timeout,
                         chunk_mb=chunk_mb,
                     )
+                    arquivos_item[banda] = destino
                     print(f"  [OK] {banda}: {status}")
                 except Exception as exc:
                     status = "erro_download"
@@ -261,20 +367,61 @@ def main() -> int:
                 }
             )
 
+        if args.baixar and gerar_rgb:
+            preview_destino = pasta_item / "preview_rgb.jpg"
+            try:
+                status_preview = gerar_preview_rgb(
+                    arquivos_item=arquivos_item,
+                    destino=preview_destino,
+                    tamanho_max_px=tamanho_max_px,
+                    percentil_min=percentil_min,
+                    percentil_max=percentil_max,
+                    qualidade_jpeg=qualidade_jpeg,
+                )
+                print(f"  [PREVIEW] RGB: {status_preview} -> {preview_destino.name}")
+                registros.append(
+                    {
+                        "id": item.id,
+                        "data": data,
+                        "colecao": colecao,
+                        "banda": "RGB_PREVIEW",
+                        "url": "",
+                        "arquivo": str(preview_destino.relative_to(ROOT)),
+                        "status": status_preview,
+                        "erro": "",
+                    }
+                )
+            except Exception as exc:
+                print(f"  [ERRO] Preview RGB: {exc}")
+                registros.append(
+                    {
+                        "id": item.id,
+                        "data": data,
+                        "colecao": colecao,
+                        "banda": "RGB_PREVIEW",
+                        "url": "",
+                        "arquivo": str(preview_destino.relative_to(ROOT)),
+                        "status": "erro_preview",
+                        "erro": str(exc),
+                    }
+                )
+
     print("\n[4/4] Salvando catálogo CSV...")
     salvar_catalogo(caminho_catalogo, registros)
 
     baixados = sum(r["status"] == "baixado" for r in registros)
     existentes = sum(r["status"] == "ja_existia" for r in registros)
-    erros = sum(r["status"] == "erro_download" for r in registros)
+    previews = sum(r["status"] == "gerado" and r["banda"] == "RGB_PREVIEW" for r in registros)
+    erros = sum(r["status"] in {"erro_download", "erro_preview"} for r in registros)
 
     print("\n" + "=" * 62)
     print(" FINALIZADO")
     print("=" * 62)
-    print(f"Itens STAC:       {len(itens)}")
-    print(f"Registros CSV:    {len(registros)}")
-    print(f"Arquivos baixados:{baixados}")
-    print(f"Já existentes:    {existentes}")
+    print(f"Itens STAC:        {len(itens)}")
+    print(f"Registros CSV:     {len(registros)}")
+    print(f"Arquivos baixados: {baixados}")
+    print(f"Já existentes:     {existentes}")
+    print(f"Previews RGB:      {previews}")
     print(f"Erros:             {erros}")
     print(f"Catálogo:          {caminho_catalogo.relative_to(ROOT)}")
 
