@@ -427,6 +427,11 @@ class TestGeradorDataset(TestCase):
                 auxiliares=auxiliares,
             )
             pasta_antiga = (raiz / antigos[0].geotiff_path).parent
+            produto_outra_cena = (
+                raiz / "data/dataset/2025-10-01/OUTRA_CENA/patch_antigo/multiband.tif"
+            )
+            produto_outra_cena.parent.mkdir(parents=True)
+            produto_outra_cena.touch()
 
             novos, _ = gerador.gerar_cena(
                 scene_id="S2_TESTE",
@@ -440,6 +445,7 @@ class TestGeradorDataset(TestCase):
             self.assertNotEqual(antigos[0].patch_id, novos[0].patch_id)
             self.assertFalse(pasta_antiga.exists())
             self.assertTrue((raiz / novos[0].geotiff_path).is_file())
+            self.assertTrue(produto_outra_cena.is_file())
 
     def test_manifest_nao_publica_caminho_scl_descartavel(self) -> None:
         with TemporaryDirectory() as temporario:

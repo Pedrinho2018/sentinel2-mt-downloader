@@ -73,17 +73,21 @@ class TestCatalogoPatches(TestCase):
             self.assertEqual(linhas["outra_cena"]["scene_id"], "cena_2")
 
     def test_nao_preserva_label_se_identidade_geoespacial_mudar(self) -> None:
-        with TemporaryDirectory() as temporario:
-            caminho = Path(temporario) / "patches.csv"
-            repositorio = RepositorioCatalogoPatchesCSV()
-            repositorio.salvar(caminho, [registro_patch(label="soja")])
+        alteracoes = {
+            "bbox": "[0, 0, 2, 2]",
+            "crs": "EPSG:4326",
+            "pixel_size": "[20, 20]",
+            "bands": "B02;B03",
+        }
+        for campo, valor in alteracoes.items():
+            with self.subTest(campo=campo), TemporaryDirectory() as temporario:
+                caminho = Path(temporario) / "patches.csv"
+                repositorio = RepositorioCatalogoPatchesCSV()
+                repositorio.salvar(caminho, [registro_patch(label="soja")])
 
-            repositorio.salvar(
-                caminho,
-                [registro_patch(bbox="[0, 0, 2, 2]", bands="B02;B03")],
-            )
+                repositorio.salvar(caminho, [registro_patch(**{campo: valor})])
 
-            with caminho.open("r", encoding="utf-8-sig", newline="") as arquivo:
-                linha = next(csv.DictReader(arquivo))
-            self.assertEqual(linha["label"], "")
-            self.assertEqual(linha["bbox"], "[0, 0, 2, 2]")
+                with caminho.open("r", encoding="utf-8-sig", newline="") as arquivo:
+                    linha = next(csv.DictReader(arquivo))
+                self.assertEqual(linha["label"], "")
+                self.assertEqual(linha[campo], valor)
