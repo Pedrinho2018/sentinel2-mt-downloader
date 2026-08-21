@@ -36,6 +36,11 @@ sudo dnf install ./sentinel2-mt-downloader-2.0.0-1.x86_64.rpm
 sudo pacman -U ./sentinel2-mt-downloader-bin-2.0.0-1-x86_64.pkg.tar.zst
 ```
 
+Em builds locais, a extensão depende de `PKGEXT` na configuração do Arch.
+Alguns ambientes geram `sentinel2-mt-downloader-bin-2.0.0-1-x86_64.pkg.tar`
+em vez de `.pkg.tar.zst`; esse arquivo também é um pacote válido e pode ser
+instalado diretamente com `sudo pacman -U caminho/do/pacote.pkg.tar`.
+
 O `PKGBUILD` publicado também pode ser colocado em uma pasta vazia e instalado
 com `makepkg -si`.
 
