@@ -13,8 +13,13 @@ comando sobre o mesmo núcleo de serviços.
 
 - consulta ao STAC do INPE/Brazil Data Cube;
 - filtro de cenas por nuvens e sombra usando a banda SCL;
-- download das bandas `B02`, `B03`, `B04`, `B08` e `NDVI`;
-- geração automática de `preview_rgb.jpg` com ajuste por percentis;
+- download configurável de `B02`, `B03`, `B04`, `B05`, `B06`, `B07`,
+  `B08`, `B8A`, `B11`, `B12`, `NDVI` e `EVI`;
+- camadas auxiliares `SCL`, `CLEAROB`, `TOTALOB` e `PROVENANCE`, quando disponíveis;
+- geração de patches GeoTIFF multibanda georreferenciados sem redimensionamento;
+- RGB PNG de dataset com stretch fixo e preview JPEG com percentis;
+- filtro de nuvem e dados válidos por patch;
+- catálogo específico `catalogo/patches.csv` e manifesto JSON opcional por patch aprovado;
 - catálogo CSV reproduzível das cenas avaliadas;
 - GUI desktop em PySide6 com mapa, perfis locais e logs em tempo real;
 - TUI em Textual para uso completo pelo terminal;
@@ -32,8 +37,9 @@ comando sobre o mesmo núcleo de serviços.
 | Provedor | INPE / Brazil Data Cube |
 | STAC | `https://data.inpe.br/bdc/stac/v1/` |
 | Coleção | `S2-16D-2` |
-| Produto | Sentinel-2 MSI Level-2A |
-| Resolução | 10 metros |
+| Dados de origem | Sentinel-2 MSI Level-2A |
+| Produto padrão | cubo BDC composto a cada 16 dias (`S2-16D-2`) |
+| Grade do produto padrão | geralmente 10 m; não confundir com resolução nativa de cada banda |
 | Composição temporal | 16 dias |
 
 O endpoint STAC e a coleção podem ser alterados em `config/config.yaml` ou pela
@@ -63,7 +69,8 @@ reinstala dependências quando os arquivos de requisitos mudarem.
 
 Pela GUI é possível:
 
-- selecionar a área no mapa com `Shift + arrastar`;
+- selecionar a área no mapa com `Shift + arrastar`; ele é carregado ao abrir a
+  página e as coordenadas continuam editáveis manualmente sem conexão;
 - definir período, bandas, limites de nuvens e opções de preview;
 - catalogar ou baixar cenas;
 - apontar diretamente para o JSON OAuth do Google;
@@ -86,8 +93,9 @@ interface.
 python iniciar_tui.py
 ```
 
-A TUI permite catalogar, baixar, sincronizar, acompanhar logs e cancelar a
-operação atual. Use `Ctrl+Q` para sair e `Ctrl+L` para limpar o log.
+A TUI permite catalogar, baixar, gerar o dataset local, sincronizar, acompanhar
+logs e cancelar a operação atual. Use `Ctrl+Q` para sair e `Ctrl+L` para limpar
+o log.
 
 ### Linha de comando
 
@@ -110,6 +118,32 @@ Baixar uma cena para validação:
 
 ```bash
 .venv/bin/python src/baixar_inpe_mt.py --baixar --max-itens 1
+```
+
+Baixar uma cena e gerar patches de 512 pixels:
+
+```bash
+.venv/bin/python src/baixar_inpe_mt.py \
+  --baixar --gerar-dataset --patch-size 512 --max-itens 1
+```
+
+Regenerar o dataset de 512 pixels usando os GeoTIFFs já existentes, sem STAC e
+sem novo download:
+
+```bash
+.venv/bin/python src/baixar_inpe_mt.py \
+  --gerar-dataset --patch-size 512 --max-itens 0
+```
+
+O modo local considera somente as cenas no período do YAML ou de
+`--inicio/--fim` e respeita `--max-itens`; use `--max-itens 0` para remover o
+limite de cenas.
+
+Gerar patches de 256 pixels com stride 256:
+
+```bash
+.venv/bin/python src/baixar_inpe_mt.py \
+  --gerar-dataset --patch-size 256 --patch-stride 256 --max-itens 0
 ```
 
 Baixar até cinco cenas em um período específico:
@@ -137,6 +171,9 @@ O arquivo padrão é `config/config.yaml`. Ele concentra:
 - período de busca e bandas;
 - filtros de qualidade e nuvens;
 - tamanho e qualidade do preview;
+- stretch independente para preview e RGB do dataset;
+- tamanho, stride, nuvem, dados válidos mínimos e limite de patches por cena;
+- diretórios e catálogos separados para cenas e dataset;
 - diretórios, timeout e tamanho de chunk;
 - credenciais, destino, extensões e lotes da sincronização.
 
@@ -154,9 +191,14 @@ Também é possível usar outro arquivo de configuração:
 .venv/bin/python src/baixar_inpe_mt.py --config /caminho/config.yaml
 ```
 
+Consulte [docs/dataset.md](docs/dataset.md) para a referência completa de
+bandas, resolução nativa, qualidade, alinhamento e catálogo de patches.
+
 ## Arquivos gerados
 
-Cada cena aprovada é organizada por data e identificador:
+Com os defaults e todos os assets disponíveis, uma cena aprovada é organizada
+por data e identificador como no exemplo abaixo. Assets ausentes são omitidos;
+os produtos do dataset dependem de suas flags e `rgb.png` exige B04/B03/B02.
 
 ```text
 data/sentinel2/
@@ -165,16 +207,52 @@ data/sentinel2/
         ├── B02.tif
         ├── B03.tif
         ├── B04.tif
+        ├── B05.tif
+        ├── B06.tif
+        ├── B07.tif
         ├── B08.tif
+        ├── B8A.tif
+        ├── B11.tif
+        ├── B12.tif
         ├── NDVI.tif
+        ├── EVI.tif
+        ├── qualidade/
+        │   ├── SCL.tif
+        │   ├── CLEAROB.tif
+        │   ├── TOTALOB.tif
+        │   └── PROVENANCE.tif
         └── preview_rgb.jpg
+
+data/dataset/
+└── 2026-02-02/
+    └── ID_DA_CENA/
+        └── ID_DA_CENA_HASH_x000000_y000000_512/
+            ├── multiband.tif
+            ├── rgb.png
+            └── metadata.json
+
+catalogo/
+├── catalogo_imagens.csv
+└── patches.csv
 ```
 
-As bandas `.tif` são dados científicos individuais. Quando abertas diretamente
-em um visualizador comum, podem parecer escuras ou em escala de cinza. Para
-conferência visual, a aplicação combina `B04` (vermelho), `B03` (verde) e `B02`
-(azul) no arquivo `preview_rgb.jpg`. Os GeoTIFFs originais são preservados para
-análises posteriores.
+Os GeoTIFFs em `data/sentinel2` são a fonte científica e nunca são
+redimensionados ou convertidos para 8 bits. `multiband.tif` é o recorte
+georreferenciado para ML, `rgb.png` é uma representação RGB 8-bit do mesmo
+patch e `preview_rgb.jpg` é apenas visualização reduzida. JPEG não é fonte do
+dataset de treinamento.
+
+O projeto gera RGB PNG por patch em vez de um `rgb_dataset.png` de cena inteira,
+evitando uma imagem enorme e redundante. Os PNGs mantêm a dimensão do patch;
+os valores científicos permanecem nos GeoTIFFs.
+
+O produto padrão baixa rasters científicos GeoTIFF. Se outra coleção fornecer
+JP2, a extensão original é preservada e o modo local também a reconhece. Em
+pacotes Linux, os defaults ficam sob `~/.local/share/sentinel2-mt`; os caminhos
+`data/` e `catalogo/` acima correspondem à execução pelo código-fonte.
+
+> Aumentar artificialmente a dimensão da imagem não aumenta a resolução
+> espacial real do Sentinel-2.
 
 O catálogo padrão é gravado em `catalogo/catalogo_imagens.csv`.
 
@@ -218,6 +296,10 @@ O tamanho padrão vem de `sincronizacao.tamanho_lote`. `--lote` altera o valor
 somente para a execução atual. Por padrão, são sincronizados `.tif`, `.tiff`,
 `.jpg` e `.jpeg`.
 
+A sincronização atual percorre apenas `download.pasta`: cobre cenas científicas
+e previews configurados, mas não envia automaticamente `dataset.pasta`, PNG,
+JSON ou `patches.csv`.
+
 A sincronização:
 
 - divide os arquivos sem perder a ordem;
@@ -237,7 +319,10 @@ O projeto separa regras de negócio, adaptadores e interfaces:
 | `SincronizadorGoogleDrive` | OAuth, hierarquia remota, lotes e uploads |
 | `ClienteDownloadHTTP` | Transferência HTTP com timeout e progresso |
 | `ProcessadorImagem` | Leitura de bandas, filtros e geração do preview |
+| `GeradorDataset` | Janelas, alinhamento, qualidade e produtos dos patches |
+| `ResolvedorAssets` | Normalização de nomes de assets entre coleções STAC |
 | `RepositorioCatalogoCSV` | Persistência reproduzível do catálogo |
+| `RepositorioCatalogoPatchesCSV` | Catálogo incremental e rastreável dos patches |
 | `AplicacaoCLI` | Automação por linha de comando |
 | `SentinelTUI` | Interface de terminal |
 | `MainWindow` | Interface gráfica desktop |
@@ -278,8 +363,9 @@ Em ambientes sem display, use o backend Qt offscreen:
 QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -v
 ```
 
-A suíte cobre configuração, regras de serviço, lotes, atualização no Drive,
-OAuth local, contraste da GUI, navegação, perfis, subprocessos e empacotamento.
+A suíte cobre também stretch, assets, janelas, georreferenciamento, alinhamento,
+SCL por patch, dados válidos, RGB PNG, catálogo e pipeline sintético, além de
+regras de serviço, Drive, OAuth, GUI, subprocessos e empacotamento.
 
 ## Pacotes Linux e releases
 

@@ -34,6 +34,10 @@ class TestConfiguracaoProjeto(TestCase):
             self.assertEqual(config.area.uf, "MT")
             self.assertEqual(config.download.timeout_segundos, 120)
             self.assertEqual(config.sincronizacao.tamanho_lote, 100)
+            self.assertFalse(config.dataset.gerar)
+            self.assertEqual(config.preview.metodo, "percentile")
+            self.assertEqual(config.dataset.patches.tamanho_px, 512)
+            self.assertEqual(config.dataset.patches.max_patches_por_cena, 100_000)
             self.assertEqual(config.caminho(config.download.pasta), raiz / "data/imagens")
 
     def test_rejeita_bbox_incompleto(self) -> None:
@@ -58,3 +62,35 @@ class TestConfiguracaoProjeto(TestCase):
             config = ConfiguracaoProjeto.carregar(arquivo, raiz=raiz)
 
             self.assertEqual(config.sincronizacao.oauth_json, "config/cliente.json")
+
+    def test_carrega_nova_configuracao_dataset(self) -> None:
+        with TemporaryDirectory() as temporario:
+            raiz = Path(temporario)
+            arquivo = raiz / "config.yaml"
+            arquivo.write_text(
+                CONFIG_MINIMA
+                + """
+preview:
+  metodo: fixed
+  minimo: 0
+  maximo: 2000
+dataset:
+  gerar: true
+  rgb:
+    metodo: percentile
+  patches:
+    tamanho_px: 256
+    stride_px: 128
+    nuvem_max_pct: 8
+    dados_validos_min_pct: 95
+""",
+                encoding="utf-8",
+            )
+
+            config = ConfiguracaoProjeto.carregar(arquivo, raiz=raiz)
+
+            self.assertTrue(config.dataset.gerar)
+            self.assertEqual(config.dataset.patches.tamanho_px, 256)
+            self.assertEqual(config.dataset.patches.stride_px, 128)
+            self.assertEqual(config.dataset.rgb.metodo, "percentile")
+            self.assertEqual(config.preview.metodo, "fixed")
