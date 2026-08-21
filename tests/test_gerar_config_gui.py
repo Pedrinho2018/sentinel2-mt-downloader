@@ -47,6 +47,7 @@ class TestGerarConfigGui(unittest.TestCase):
         self.assertEqual(config["sincronizacao"]["token_json"], "${GOOGLE_TOKEN_JSON:-config/google-token.json}")
         self.assertEqual(config["sincronizacao"]["pasta_id"], "${GOOGLE_PASTA_ID:-root}")
         self.assertEqual(config["sincronizacao"]["extensoes"], [".tif", ".tiff", ".jpg", ".jpeg"])
+        self.assertEqual(config["dataset"]["patches"]["max_patches_por_cena"], 100000)
 
     def test_salvar_config_cria_arquivo(self):
         dados = {"bbox": [-1, -2, 3, 4]}
@@ -63,6 +64,14 @@ class TestGerarConfigGui(unittest.TestCase):
 
     def test_bbox_para_yaml_normaliza_ordem(self):
         self.assertEqual(normalizar_bbox([3, 5, -1, 2]), [-1, 2, 3, 5])
+
+    def test_bbox_rejeita_coordenadas_nao_finitas_ou_fora_do_globo(self):
+        with self.assertRaisesRegex(ValueError, "finitas"):
+            normalizar_bbox([float("nan"), -10, -50, -7])
+        with self.assertRaisesRegex(ValueError, "Longitudes"):
+            normalizar_bbox([-200, -10, -50, -7])
+        with self.assertRaisesRegex(ValueError, "Latitudes"):
+            normalizar_bbox([-60, -100, -50, -7])
 
     def test_local_config_store_persists_region(self):
         with TemporaryDirectory() as temporario:
@@ -118,6 +127,30 @@ class TestGerarConfigGui(unittest.TestCase):
         self.assertEqual(
             argumentos,
             ["--config", "config/config.yaml", "--sincronizar", "--lote", "25"],
+        )
+
+    def test_monta_argumentos_para_dataset_local(self):
+        argumentos = montar_argumentos_operacao(
+            "dataset",
+            "config/config.yaml",
+            max_itens=0,
+            patch_size=256,
+            patch_stride=128,
+        )
+
+        self.assertEqual(
+            argumentos,
+            [
+                "--config",
+                "config/config.yaml",
+                "--gerar-dataset",
+                "--max-itens",
+                "0",
+                "--patch-size",
+                "256",
+                "--patch-stride",
+                "128",
+            ],
         )
 
     def test_local_config_store_agrupar_por_uf(self):

@@ -42,3 +42,51 @@ class ResumoExecucao:
     descartadas: int = 0
     previews: int = 0
     erros: int = 0
+
+
+@dataclass
+class RegistroPatch:
+    patch_id: str
+    scene_id: str
+    collection: str
+    date: str
+    bbox: str
+    crs: str
+    width: int
+    height: int
+    pixel_size: str
+    cloud_pct: str
+    valid_pixel_pct: str
+    source_scene: str
+    rgb_png: str = ""
+    geotiff_path: str = ""
+    bands: str = ""
+    missing_bands: str = ""
+    scl_path: str = ""
+    CLEAROB: str = ""
+    TOTALOB: str = ""
+    PROVENANCE: str = ""
+    status: str = ""
+    erro: str = ""
+    label: str = ""
+    label_source: str = ""
+    label_confidence: str = ""
+
+    def para_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class ResumoDataset:
+    candidatos: int = 0
+    aprovados: int = 0
+    descartados_nuvem: int = 0
+    descartados_nodata: int = 0
+    erros: int = 0
+
+    def acumular(self, outro: "ResumoDataset") -> None:
+        self.candidatos += outro.candidatos
+        self.aprovados += outro.aprovados
+        self.descartados_nuvem += outro.descartados_nuvem
+        self.descartados_nodata += outro.descartados_nodata
+        self.erros += outro.erros

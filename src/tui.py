@@ -104,6 +104,7 @@ class SentinelTUI(App):
                     [
                         ("Catalogar sem baixar", "catalogar"),
                         ("Baixar imagens", "baixar"),
+                        ("Gerar dataset local", "dataset"),
                         ("Sincronizar com Google Drive", "sincronizar"),
                     ],
                     value="catalogar",
@@ -118,6 +119,15 @@ class SentinelTUI(App):
                 yield Input(placeholder="Usar config.yaml", id="fim")
                 yield Label("Máximo de cenas")
                 yield Input(placeholder="Usar config.yaml; 0 = todas", id="max_itens", type="integer")
+                yield Label("Tamanho dos patches")
+                yield Select(
+                    [("512 px", 512), ("256 px", 256)],
+                    value=512,
+                    allow_blank=False,
+                    id="patch_size",
+                )
+                yield Label("Stride dos patches")
+                yield Input(value="512", id="patch_stride", type="integer")
                 yield Label("JSON OAuth do Google")
                 yield Input(placeholder="Usar caminho do config.yaml", id="oauth_json")
                 yield Label("Tamanho do lote")
@@ -147,6 +157,8 @@ class SentinelTUI(App):
             self.query_one(campo, Input).disabled = sincronizacao
         for campo in ("#oauth_json", "#lote"):
             self.query_one(campo, Input).disabled = not sincronizacao
+        self.query_one("#patch_size", Select).disabled = operacao != "dataset"
+        self.query_one("#patch_stride", Input).disabled = operacao != "dataset"
 
     def montar_comando(self) -> list[str]:
         operacao = str(self.query_one("#operacao", Select).value)
@@ -157,6 +169,19 @@ class SentinelTUI(App):
         comando = [sys.executable, "--config", str(config)] if EMPACOTADO else [sys.executable, "-u", str(SCRIPT), "--config", str(config)]
         if operacao == "baixar":
             comando.append("--baixar")
+        elif operacao == "dataset":
+            stride = self.query_one("#patch_stride", Input).value.strip()
+            if not stride or int(stride) <= 0:
+                raise ValueError("O stride dos patches deve ser maior que zero.")
+            comando.extend(
+                [
+                    "--gerar-dataset",
+                    "--patch-size",
+                    str(self.query_one("#patch_size", Select).value),
+                    "--patch-stride",
+                    stride,
+                ]
+            )
         elif operacao == "sincronizar":
             comando.append("--sincronizar")
 

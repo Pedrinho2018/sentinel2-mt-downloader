@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -33,15 +33,55 @@ class ConfiguracaoQualidade:
     filtrar_nuvens: bool = True
     nuvem_max_pct: float = 20.0
     manter_scl: bool = True
+    camadas_auxiliares: tuple[str, ...] = ("SCL", "CLEAROB", "TOTALOB", "PROVENANCE")
+
+    @property
+    def cena_nuvem_max_pct(self) -> float:
+        """Alias explícito para distinguir o limite da cena do limite dos patches."""
+        return self.nuvem_max_pct
 
 
 @dataclass(frozen=True)
 class ConfiguracaoPreview:
     gerar_rgb: bool = True
     tamanho_max_px: int = 1600
+    metodo: str = "percentile"
+    minimo: float = 0.0
+    maximo: float = 2000.0
     percentil_min: float = 2.0
     percentil_max: float = 98.0
     qualidade_jpeg: int = 92
+
+
+@dataclass(frozen=True)
+class ConfiguracaoRGBDataset:
+    gerar_png: bool = True
+    metodo: str = "fixed"
+    minimo: float = 0.0
+    maximo: float = 2000.0
+    percentil_min: float = 2.0
+    percentil_max: float = 98.0
+
+
+@dataclass(frozen=True)
+class ConfiguracaoPatches:
+    habilitado: bool = True
+    tamanho_px: int = 512
+    stride_px: int = 512
+    nuvem_max_pct: float = 10.0
+    dados_validos_min_pct: float = 90.0
+    max_patches_por_cena: int = 100_000
+
+
+@dataclass(frozen=True)
+class ConfiguracaoDataset:
+    gerar: bool = False
+    pasta: str = "data/dataset"
+    catalogo: str = "catalogo/patches.csv"
+    rgb: ConfiguracaoRGBDataset = field(default_factory=ConfiguracaoRGBDataset)
+    patches: ConfiguracaoPatches = field(default_factory=ConfiguracaoPatches)
+    gerar_geotiff_multibanda: bool = True
+    gerar_metadata_json: bool = True
 
 
 @dataclass(frozen=True)
@@ -75,6 +115,7 @@ class ConfiguracaoProjeto:
     preview: ConfiguracaoPreview
     download: ConfiguracaoDownload
     sincronizacao: ConfiguracaoSincronizacao
+    dataset: ConfiguracaoDataset = field(default_factory=ConfiguracaoDataset)
 
     @classmethod
     def carregar(cls, caminho: Path, raiz: Path | None = None) -> "ConfiguracaoProjeto":
@@ -93,8 +134,21 @@ class ConfiguracaoProjeto:
         if len(bbox) != 4:
             raise ValueError("area.bbox deve conter quatro coordenadas")
 
-        qualidade = dados.get("qualidade", {})
-        preview = dados.get("preview", {})
+        qualidade = dict(dados.get("qualidade", {}))
+        if "cena_nuvem_max_pct" in qualidade:
+            qualidade.setdefault("nuvem_max_pct", qualidade.pop("cena_nuvem_max_pct"))
+        qualidade["camadas_auxiliares"] = tuple(
+            str(asset).upper() for asset in qualidade.get(
+                "camadas_auxiliares", ("SCL", "CLEAROB", "TOTALOB", "PROVENANCE")
+            )
+        )
+        preview = dict(dados.get("preview", {}))
+        preview.setdefault("metodo", "percentile")
+        dataset_dados = dict(dados.get("dataset", {}))
+        rgb_dados = dict(dataset_dados.pop("rgb", {}))
+        if "gerar_rgb_png" in dataset_dados:
+            rgb_dados.setdefault("gerar_png", dataset_dados.pop("gerar_rgb_png"))
+        patches_dados = dict(dataset_dados.pop("patches", {}))
         download = dados.get("download", {})
         sincronizacao = dados.get("sincronizacao", {})
         oauth_json = sincronizacao.get("oauth_json") or cls._descobrir_oauth(raiz_projeto)
@@ -103,7 +157,7 @@ class ConfiguracaoProjeto:
             stac=ConfiguracaoStac(**dados["stac"]),
             area=ConfiguracaoArea(nome=area["nome"], uf=area["uf"], bbox=bbox),
             periodo=ConfiguracaoPeriodo(**dados["periodo"]),
-            bandas=tuple(str(banda) for banda in dados["bandas"]),
+            bandas=tuple(str(banda).upper() for banda in dados["bandas"]),
             qualidade=ConfiguracaoQualidade(**qualidade),
             preview=ConfiguracaoPreview(**preview),
             download=ConfiguracaoDownload(**download),
@@ -114,6 +168,11 @@ class ConfiguracaoProjeto:
                 pasta_id=str(sincronizacao.get("pasta_id", "root")),
                 tamanho_lote=int(sincronizacao.get("tamanho_lote", 100)),
                 extensoes=tuple(sincronizacao.get("extensoes", (".tif", ".tiff", ".jpg", ".jpeg"))),
+            ),
+            dataset=ConfiguracaoDataset(
+                rgb=ConfiguracaoRGBDataset(**rgb_dados),
+                patches=ConfiguracaoPatches(**patches_dados),
+                **dataset_dados,
             ),
         )
         config.validar()
@@ -176,8 +235,51 @@ class ConfiguracaoProjeto:
             raise ValueError("Timeout e tamanho do chunk devem ser positivos")
         if not 0 <= self.qualidade.nuvem_max_pct <= 100:
             raise ValueError("qualidade.nuvem_max_pct deve estar entre 0 e 100")
+        if self.preview.metodo not in {"fixed", "percentile"}:
+            raise ValueError("preview.metodo deve ser fixed ou percentile")
+        if self.preview.tamanho_max_px <= 0:
+            raise ValueError("preview.tamanho_max_px deve ser positivo")
+        if not 1 <= self.preview.qualidade_jpeg <= 100:
+            raise ValueError("preview.qualidade_jpeg deve estar entre 1 e 100")
+        self._validar_rgb(
+            self.preview.metodo,
+            self.preview.minimo,
+            self.preview.maximo,
+            self.preview.percentil_min,
+            self.preview.percentil_max,
+            "preview",
+        )
+        patches = self.dataset.patches
+        if patches.tamanho_px not in {256, 512}:
+            raise ValueError("dataset.patches.tamanho_px deve ser 256 ou 512")
+        if patches.stride_px <= 0:
+            raise ValueError("dataset.patches.stride_px deve ser positivo")
+        if patches.max_patches_por_cena <= 0:
+            raise ValueError("dataset.patches.max_patches_por_cena deve ser positivo")
+        if not 0 <= patches.nuvem_max_pct <= 100:
+            raise ValueError("dataset.patches.nuvem_max_pct deve estar entre 0 e 100")
+        if not 0 <= patches.dados_validos_min_pct <= 100:
+            raise ValueError("dataset.patches.dados_validos_min_pct deve estar entre 0 e 100")
+        rgb = self.dataset.rgb
+        self._validar_rgb(rgb.metodo, rgb.minimo, rgb.maximo, rgb.percentil_min, rgb.percentil_max, "dataset.rgb")
         if self.sincronizacao.tamanho_lote <= 0:
             raise ValueError("sincronizacao.tamanho_lote deve ser maior que zero")
+
+    @staticmethod
+    def _validar_rgb(
+        metodo: str,
+        minimo: float,
+        maximo: float,
+        percentil_min: float,
+        percentil_max: float,
+        prefixo: str,
+    ) -> None:
+        if metodo not in {"fixed", "percentile"}:
+            raise ValueError(f"{prefixo}.metodo deve ser fixed ou percentile")
+        if maximo <= minimo:
+            raise ValueError(f"{prefixo}.maximo deve ser maior que minimo")
+        if not 0 <= percentil_min < percentil_max <= 100:
+            raise ValueError(f"Percentis de {prefixo} devem respeitar 0 <= min < max <= 100")
 
     def caminho(self, valor: str | Path) -> Path:
         caminho = Path(valor).expanduser()
