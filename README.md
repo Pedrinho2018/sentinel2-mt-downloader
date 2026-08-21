@@ -1,9 +1,9 @@
 # Sentinel-2 MT Downloader
 
-Aplicação Python para catalogar, filtrar, baixar, visualizar e sincronizar
-imagens Sentinel-2 de Mato Grosso. O projeto usa o catálogo STAC do
-INPE/Brazil Data Cube e oferece interfaces gráfica, terminal e linha de
-comando sobre o mesmo núcleo de serviços.
+Aplicação desktop para catalogar, filtrar, baixar, visualizar e sincronizar
+imagens Sentinel-2 de Mato Grosso. A GUI PySide6 é a interface principal
+distribuída pelo projeto. A TUI e a CLI continuam disponíveis sobre o mesmo
+núcleo de serviços para uso avançado e automação.
 
 > O objetivo atual é preparar um conjunto de imagens confiável e reproduzível
 > para análise geoespacial e futuros experimentos de classificação de áreas de
@@ -80,6 +80,15 @@ python iniciar_gui.py --setup-only
 Consulte [README_GUI.md](README_GUI.md) para detalhes e solução de problemas da
 interface.
 
+Depois de instalar um pacote `.deb`, `.rpm` ou `.pkg.tar.zst`, abra o aplicativo
+pelo menu do sistema ou execute:
+
+```bash
+sentinel2-mt
+```
+
+O executável sem argumentos e o atalho do sistema abrem sempre a GUI.
+
 ### Interface de terminal
 
 ```bash
@@ -88,6 +97,7 @@ python iniciar_tui.py
 
 A TUI permite catalogar, baixar, sincronizar, acompanhar logs e cancelar a
 operação atual. Use `Ctrl+Q` para sair e `Ctrl+L` para limpar o log.
+Em uma instalação empacotada, use `sentinel2-mt --tui`.
 
 ### Linha de comando
 
@@ -96,6 +106,9 @@ Prepare o ambiente sem abrir a TUI:
 ```bash
 python iniciar_tui.py --setup-only
 ```
+
+Em uma instalação empacotada, prefixe as opções com `sentinel2-mt --cli`.
+As opções antigas sem esse prefixo continuam aceitas para compatibilidade.
 
 No Linux/macOS, execute a CLI com `.venv/bin/python`. No Windows, substitua por
 `.venv\Scripts\python.exe`.
@@ -291,16 +304,16 @@ executa os testes, gera um binário autocontido com PyInstaller e produz:
 - Arch Linux: `.pkg.tar.zst` e `PKGBUILD`;
 - binário Linux x86_64 e `SHA256SUMS`.
 
-Os pacotes iniciam a TUI quando executados sem argumentos e oferecem a CLI
-quando recebem opções. A GUI PySide6 pode ser iniciada pelo código-fonte com
-`python iniciar_gui.py`.
+Os pacotes incluem a GUI PySide6 e a iniciam quando o executável é chamado sem
+argumentos. As interfaces alternativas permanecem disponíveis com
+`sentinel2-mt --tui` e `sentinel2-mt --cli ...`.
 
 Para publicar uma versão, atualize `__version__` em
 `src/sentinel2_mt/__init__.py`, crie uma tag com a mesma versão e envie-a:
 
 ```bash
-git tag -a v1.0.0 -m "release: v1.0.0"
-git push origin v1.0.0
+git tag -a v1.1.2 -m "release: v1.1.2"
+git push origin v1.1.2
 ```
 
 Uma execução manual do workflow gera artefatos para validação sem publicar uma
