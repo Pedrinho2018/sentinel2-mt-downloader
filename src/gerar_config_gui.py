@@ -10,7 +10,7 @@ import yaml
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
-from sentinel2_mt.config_builder import gerar_config, salvar_config as persistir_config
+from sentinel2_mt.config_builder import GeradorConfiguracao, gerar_config, salvar_config as persistir_config
 from sentinel2_mt.gui_support import (
     LocalConfigStore,
     montar_argumentos_operacao,
@@ -36,6 +36,28 @@ def botao(texto: str, tipo: str = "secondaryButton") -> QtWidgets.QPushButton:
     componente.setObjectName(tipo)
     componente.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
     return componente
+
+
+def rotulo_com_ajuda(texto: str, ajuda: str) -> QtWidgets.QWidget:
+    """Cria um rótulo compacto com ajuda contextual acessível."""
+    conteiner = QtWidgets.QWidget()
+    layout = QtWidgets.QHBoxLayout(conteiner)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(5)
+    rotulo = QtWidgets.QLabel(texto)
+    icone = QtWidgets.QToolButton()
+    icone.setObjectName("helpIcon")
+    icone.setText("?")
+    icone.setToolTip(ajuda)
+    icone.setStatusTip(ajuda)
+    icone.setAccessibleName(f"Ajuda: {texto}")
+    icone.setAccessibleDescription(ajuda)
+    icone.setCursor(QtCore.Qt.CursorShape.WhatsThisCursor)
+    icone.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+    layout.addWidget(rotulo)
+    layout.addWidget(icone)
+    layout.addStretch()
+    return conteiner
 
 
 def configurar_aplicacao(app: QtWidgets.QApplication) -> None:
@@ -93,40 +115,239 @@ class Cartao(QtWidgets.QFrame):
             self.layout_principal.addWidget(descricao)
 
 
+class ControleNumerico(QtWidgets.QWidget):
+    """Controle numérico por deslizador, com o valor legível ao lado do trilho."""
+
+    valueChanged = QtCore.Signal(object)
+
+    def __init__(
+        self,
+        minimo: float,
+        maximo: float,
+        valor: float,
+        sufixo: str = "",
+        *,
+        casas_decimais: int = 0,
+    ) -> None:
+        super().__init__()
+        self._minimo = minimo
+        self._maximo = maximo
+        self._casas_decimais = casas_decimais
+        self._escala = 10**casas_decimais
+        self._sufixo = sufixo
+        self._texto_valor_especial = ""
+
+        self.deslizador = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.deslizador.setObjectName("numericSlider")
+        self.deslizador.setRange(
+            round(minimo * self._escala), round(maximo * self._escala)
+        )
+        self.deslizador.setSingleStep(1)
+        self.deslizador.setPageStep(max(1, (self.deslizador.maximum() - self.deslizador.minimum()) // 20))
+        self.deslizador.setTickPosition(QtWidgets.QSlider.TickPosition.TicksBelow)
+        self.deslizador.setTickInterval(
+            max(1, (self.deslizador.maximum() - self.deslizador.minimum()) // 5)
+        )
+        self.deslizador.setToolTip("Arraste para ajustar o valor; use as setas para ajustes finos.")
+
+        self.rotulo_valor = QtWidgets.QLabel()
+        self.rotulo_valor.setObjectName("numericSliderValue")
+        self.rotulo_valor.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter
+        )
+        self.rotulo_valor.setMinimumWidth(82)
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        layout.addWidget(self.deslizador, 1)
+        layout.addWidget(self.rotulo_valor)
+        self.deslizador.valueChanged.connect(self._atualizar_rotulo)
+        self.setValue(valor)
+
+    def _atualizar_rotulo(self, _posicao: int) -> None:
+        valor = self.value()
+        if self._texto_valor_especial and valor == self._minimo:
+            texto = self._texto_valor_especial
+        elif self._casas_decimais:
+            texto = f"{valor:.{self._casas_decimais}f}{self._sufixo}"
+        else:
+            texto = f"{int(valor)}{self._sufixo}"
+        self.rotulo_valor.setText(texto)
+        self.deslizador.setAccessibleName(texto)
+        self.valueChanged.emit(valor)
+
+    def value(self) -> int | float:
+        valor = self.deslizador.value() / self._escala
+        return round(valor, self._casas_decimais) if self._casas_decimais else int(valor)
+
+    def setValue(self, valor: int | float) -> None:
+        posicao = round(float(valor) * self._escala)
+        mudou = posicao != self.deslizador.value()
+        self.deslizador.setValue(posicao)
+        if not mudou:
+            self._atualizar_rotulo(posicao)
+
+    def setSpecialValueText(self, texto: str) -> None:
+        self._texto_valor_especial = texto
+        self._atualizar_rotulo(self.deslizador.value())
+
+    def setEnabled(self, ativo: bool) -> None:
+        super().setEnabled(ativo)
+        self.deslizador.setEnabled(ativo)
+
+
 class MapaWidget(QWebEngineView):
     areaSelecionada = QtCore.Signal(object)
+    mapaPronto = QtCore.Signal()
+    mapaErro = QtCore.Signal(str)
 
     def __init__(self, bbox_inicial: list[float], parent=None) -> None:
         super().__init__(parent)
-        self.bbox_inicial = bbox_inicial
+        self._bbox_pendente = normalizar_bbox(bbox_inicial)
+        self._html_iniciado = False
+        self._mapa_pronto = False
+        self._erro_mapa = False
+        self._tentativas_estado = 0
         self.setMinimumHeight(460)
+        self.setStyleSheet("background: #dfe9e5;")
+
+        self._estado_mapa = QtWidgets.QLabel("Carregando mapa...", self)
+        self._estado_mapa.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self._estado_mapa.setStyleSheet(
+            "background: #dfe9e5; color: #31554a; font-size: 14px; font-weight: 600;"
+        )
+        self._estado_mapa.show()
+
+        self._timer_estado = QtCore.QTimer(self)
+        self._timer_estado.setInterval(250)
+        self._timer_estado.timeout.connect(self._verificar_estado)
         self.loadFinished.connect(self._ao_carregar)
-        self.setHtml(self._html())
+
+    def showEvent(self, evento: QtGui.QShowEvent) -> None:
+        super().showEvent(evento)
+        if self._erro_mapa:
+            self._html_iniciado = False
+            self._erro_mapa = False
+        self._iniciar_mapa()
+        if self._mapa_pronto:
+            QtCore.QTimer.singleShot(0, self.reativar)
+            QtCore.QTimer.singleShot(150, self.reativar)
+
+    def resizeEvent(self, evento: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(evento)
+        self._estado_mapa.setGeometry(self.rect())
+
+    def _iniciar_mapa(self) -> None:
+        if self._html_iniciado:
+            return
+        self._html_iniciado = True
+        self._erro_mapa = False
+        self._tentativas_estado = 0
+        self._estado_mapa.setText("Carregando mapa...")
+        self._estado_mapa.show()
+        self._estado_mapa.raise_()
+        self.setHtml(self._html(), QtCore.QUrl("https://mapa.local/"))
 
     def _ao_carregar(self, carregou: bool) -> None:
-        if carregou:
-            self.exibir_bbox(self.bbox_inicial)
+        if not carregou:
+            self._mostrar_erro("Não foi possível carregar o documento do mapa.")
+            return
+        self._timer_estado.start()
+        self._verificar_estado()
+
+    def _verificar_estado(self) -> None:
+        if not self._html_iniciado or self._mapa_pronto:
+            self._timer_estado.stop()
+            return
+        self._tentativas_estado += 1
+        self.page().runJavaScript(
+            "JSON.stringify({ready: window.mapReady === true, error: window.mapError || ''})",
+            self._receber_estado,
+        )
+
+    def _receber_estado(self, valor: str | None) -> None:
+        try:
+            estado = json.loads(valor) if valor else {}
+        except (TypeError, ValueError):
+            estado = {}
+        if estado.get("ready"):
+            self._timer_estado.stop()
+            self._mapa_pronto = True
+            self._estado_mapa.hide()
+            self._aplicar_bbox_pendente()
+            self._invalidar_tamanho()
+            self.mapaPronto.emit()
+            return
+        if estado.get("error"):
+            self._mostrar_erro(str(estado["error"]))
+            return
+        if self._tentativas_estado >= 40:
+            self._mostrar_erro(
+                "O mapa não respondeu. Verifique a conexão e tente abrir esta página novamente."
+            )
+
+    def _mostrar_erro(self, mensagem: str) -> None:
+        self._timer_estado.stop()
+        self._erro_mapa = True
+        self._estado_mapa.setText(mensagem)
+        self._estado_mapa.show()
+        self._estado_mapa.raise_()
+        self.mapaErro.emit(mensagem)
+
+    def _invalidar_tamanho(self) -> None:
+        if self._mapa_pronto:
+            self.page().runJavaScript("window.invalidateMapSize && window.invalidateMapSize();")
+
+    def reativar(self) -> None:
+        self._iniciar_mapa()
+        if not self._mapa_pronto:
+            return
+        self._invalidar_tamanho()
 
     def exibir_bbox(self, bbox: list[float]) -> None:
-        bbox = normalizar_bbox(bbox)
-        self.page().runJavaScript(f"window.setSelection({json.dumps(bbox)});")
+        self._bbox_pendente = normalizar_bbox(bbox)
+        if self._mapa_pronto:
+            self._aplicar_bbox_pendente()
+
+    def _aplicar_bbox_pendente(self) -> None:
+        self.page().runJavaScript(
+            f"window.setSelection && window.setSelection({json.dumps(self._bbox_pendente)});"
+        )
 
     def capturar_bbox(self) -> None:
-        def receber(valor: str | None) -> None:
-            try:
-                bbox = json.loads(valor) if valor else None
-            except (TypeError, ValueError):
-                bbox = None
-            self.areaSelecionada.emit(bbox)
+        if not self._mapa_pronto:
+            self.areaSelecionada.emit(None)
+            return
+        self.page().runJavaScript(
+            "JSON.stringify(window.currentSelection)", self._receber_selecao
+        )
 
-        self.page().runJavaScript("JSON.stringify(window.currentSelection)", receber)
+    def _receber_selecao(self, valor: str | None) -> None:
+        try:
+            bbox = json.loads(valor) if valor else None
+            bbox = normalizar_bbox(bbox) if isinstance(bbox, list) else None
+        except (TypeError, ValueError):
+            bbox = None
+        if bbox is not None:
+            self._bbox_pendente = bbox
+        self.areaSelecionada.emit(bbox)
 
     @staticmethod
     def _html() -> str:
         return """
         <!doctype html><html><head><meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none';
+          script-src 'nonce-sentinel2-map' https://unpkg.com https://cdn.jsdelivr.net;
+          style-src 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net;
+          img-src data: https://*.tile.openstreetmap.org;" />
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+          integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H"
+          crossorigin="anonymous" />
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
+          integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H"
+          crossorigin="anonymous" />
         <style>
           html, body, #map { margin: 0; width: 100%; height: 100%; background: #dfe9e5; }
           .hint { position: absolute; z-index: 900; top: 12px; left: 50%; transform: translateX(-50%);
@@ -134,48 +355,83 @@ class MapaWidget(QWebEngineView):
             font: 12px sans-serif; box-shadow: 0 3px 12px rgba(0,0,0,.18); }
         </style></head><body><div id="map"></div>
         <div class="hint">Segure Shift e arraste para selecionar uma área</div>
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-        <script>
-          const map = L.map('map', {worldCopyJump: true}).setView([-15.5, -55.0], 5);
-          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '&copy; OpenStreetMap contributors'
-          }).addTo(map);
+        <script nonce="sentinel2-map">
+          window.currentSelection = null;
+          window.mapReady = false;
+          window.mapError = '';
+          let map = null;
           let start = null;
           let rectangle = null;
-          window.currentSelection = null;
 
-          window.setSelection = function(bbox) {
-            if (!bbox || bbox.length !== 4) return;
+          window.setSelection = function(bbox, ajustarVisao = true) {
+            if (!map || !bbox || bbox.length !== 4) return;
             window.currentSelection = bbox;
             const bounds = [[bbox[1], bbox[0]], [bbox[3], bbox[2]]];
             if (rectangle) map.removeLayer(rectangle);
             rectangle = L.rectangle(bounds, {color: '#168a58', weight: 2, fillOpacity: .16}).addTo(map);
-            map.fitBounds(bounds, {padding: [24, 24], maxZoom: 10});
+            if (ajustarVisao) {
+              map.fitBounds(bounds, {padding: [24, 24], maxZoom: 10, animate: false});
+            }
             setTimeout(() => map.invalidateSize(), 100);
           };
 
-          map.on('mousedown', function(event) {
-            if (!event.originalEvent.shiftKey) return;
-            start = event.latlng;
-            map.dragging.disable();
-          });
-          map.on('mousemove', function(event) {
-            if (!start) return;
-            window.setSelection([
-              Math.min(start.lng, event.latlng.lng), Math.min(start.lat, event.latlng.lat),
-              Math.max(start.lng, event.latlng.lng), Math.max(start.lat, event.latlng.lat)
-            ]);
-          });
-          map.on('mouseup', function(event) {
-            if (!start) return;
-            window.setSelection([
-              Math.min(start.lng, event.latlng.lng), Math.min(start.lat, event.latlng.lat),
-              Math.max(start.lng, event.latlng.lng), Math.max(start.lat, event.latlng.lat)
-            ]);
-            start = null;
-            map.dragging.enable();
-          });
-          window.addEventListener('resize', () => map.invalidateSize());
+          window.invalidateMapSize = function() {
+            if (map) map.invalidateSize();
+          };
+
+          function iniciarMapa() {
+            try {
+              map = L.map('map', {worldCopyJump: true, boxZoom: false}).setView([-15.5, -55.0], 5);
+              L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; OpenStreetMap contributors'
+              }).addTo(map);
+              map.on('mousedown', function(event) {
+                if (!event.originalEvent.shiftKey) return;
+                start = event.latlng;
+                map.dragging.disable();
+              });
+              map.on('mousemove', function(event) {
+                if (!start) return;
+                window.setSelection([
+                  Math.min(start.lng, event.latlng.lng), Math.min(start.lat, event.latlng.lat),
+                  Math.max(start.lng, event.latlng.lng), Math.max(start.lat, event.latlng.lat)
+                ], false);
+              });
+              map.on('mouseup', function(event) {
+                if (!start) return;
+                window.setSelection([
+                  Math.min(start.lng, event.latlng.lng), Math.min(start.lat, event.latlng.lat),
+                  Math.max(start.lng, event.latlng.lng), Math.max(start.lat, event.latlng.lat)
+                ], false);
+                start = null;
+                map.dragging.enable();
+              });
+              window.addEventListener('resize', window.invalidateMapSize);
+              window.mapReady = true;
+            } catch (erro) {
+              window.mapError = 'Falha ao inicializar o mapa: ' + erro.message;
+            }
+          }
+
+          function carregarLeaflet(indice) {
+            const fontes = [
+              'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
+              'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js'
+            ];
+            if (indice >= fontes.length) {
+              window.mapError = 'Não foi possível carregar a biblioteca do mapa.';
+              return;
+            }
+            const script = document.createElement('script');
+            script.src = fontes[indice];
+            script.crossOrigin = 'anonymous';
+            script.integrity = 'sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH';
+            script.onload = iniciarMapa;
+            script.onerror = () => carregarLeaflet(indice + 1);
+            document.head.appendChild(script);
+          }
+
+          carregarLeaflet(0);
         </script></body></html>
         """
 
@@ -228,16 +484,27 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.colecao = QtWidgets.QLineEdit("S2-16D-2")
         self.stac_url = QtWidgets.QLineEdit("https://data.inpe.br/bdc/stac/v1/")
-        self.bandas = QtWidgets.QLineEdit("B02, B03, B04, B08, NDVI")
+        self.bandas = QtWidgets.QLineEdit(
+            "B02, B03, B04, B05, B06, B07, B08, B8A, B11, B12, NDVI, EVI"
+        )
         self.filtrar_nuvens = QtWidgets.QCheckBox("Descartar cenas com nuvens/sombra")
         self.filtrar_nuvens.setChecked(True)
         self.manter_scl = QtWidgets.QCheckBox("Manter arquivo SCL")
         self.manter_scl.setChecked(True)
         self.gerar_rgb = QtWidgets.QCheckBox("Gerar preview RGB")
         self.gerar_rgb.setChecked(True)
-        self.nuvem_max_pct = self._inteiro(0, 100, 20, "%")
+        self.nuvem_max_pct = self._inteiro(0, 100, 40, "%")
         self.tamanho_max_px = self._inteiro(100, 5000, 1600, " px")
         self.qualidade_jpeg = self._inteiro(1, 100, 92, "%")
+        self.gerar_dataset = QtWidgets.QCheckBox("Gerar dataset após o download")
+        self.patch_tamanho_px = QtWidgets.QComboBox()
+        self.patch_tamanho_px.addItem("512 px", 512)
+        self.patch_tamanho_px.addItem("256 px", 256)
+        self.patch_stride_px = self._inteiro(1, 4096, 512, " px")
+        self.patch_nuvem_max_pct = self._inteiro(0, 100, 10, "%")
+        self.dados_validos_min_pct = self._inteiro(0, 100, 90, "%")
+        self.dataset_rgb_minimo = self._inteiro(-10000, 10000, 0)
+        self.dataset_rgb_maximo = self._inteiro(-10000, 30000, 2000)
 
         self.pasta_download = QtWidgets.QLineEdit("data/sentinel2")
         self.catalogo = QtWidgets.QLineEdit("catalogo/catalogo_imagens.csv")
@@ -257,6 +524,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.operacao = QtWidgets.QComboBox()
         self.operacao.addItem("Catalogar sem baixar", "catalogar")
         self.operacao.addItem("Baixar imagens aprovadas", "baixar")
+        self.operacao.addItem("Gerar dataset das cenas locais", "dataset")
         self.operacao.addItem("Sincronizar com Google Drive", "sincronizar")
         self.max_execucao = self._inteiro(0, 1000, 5)
         self.max_execucao.setSpecialValueText("Todas")
@@ -277,20 +545,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.imagem_preview.setMinimumHeight(210)
 
     @staticmethod
-    def _inteiro(minimo: int, maximo: int, valor: int, sufixo: str = "") -> QtWidgets.QSpinBox:
-        campo = QtWidgets.QSpinBox()
-        campo.setRange(minimo, maximo)
-        campo.setValue(valor)
-        campo.setSuffix(sufixo)
-        return campo
+    def _inteiro(minimo: int, maximo: int, valor: int, sufixo: str = "") -> ControleNumerico:
+        return ControleNumerico(minimo, maximo, valor, sufixo)
 
     @staticmethod
-    def _coordenada(minimo: float, maximo: float, valor: float) -> QtWidgets.QDoubleSpinBox:
-        campo = QtWidgets.QDoubleSpinBox()
-        campo.setRange(minimo, maximo)
-        campo.setDecimals(6)
-        campo.setValue(valor)
-        return campo
+    def _coordenada(minimo: float, maximo: float, valor: float) -> ControleNumerico:
+        # Mantém a precisão de seis casas já suportada pela configuração e pelo mapa.
+        return ControleNumerico(minimo, maximo, valor, "°", casas_decimais=6)
 
     def _montar_janela(self) -> None:
         raiz = QtWidgets.QWidget()
@@ -385,7 +646,12 @@ class MainWindow(QtWidgets.QMainWindow):
         operacao = Cartao("Nova operação", "A configuração é salva automaticamente antes da execução.")
         form = QtWidgets.QFormLayout()
         form.addRow("Operação", self.operacao)
-        form.addRow("Máximo de cenas", self.max_execucao)
+        form.addRow(
+            rotulo_com_ajuda(
+                "Máximo de cenas", "Limita quantas cenas serão processadas; em 'Todas', não há limite."
+            ),
+            self.max_execucao,
+        )
         self.resumo_operacao = QtWidgets.QLabel()
         self.resumo_operacao.setWordWrap(True)
         self.resumo_operacao.setObjectName("cardHelp")
@@ -437,10 +703,10 @@ class MainWindow(QtWidgets.QMainWindow):
         form.addRow("UF", self.uf)
         form.addRow("Data inicial", self.inicio)
         form.addRow("Data final", self.fim)
-        form.addRow("Oeste", self.oeste)
-        form.addRow("Sul", self.sul)
-        form.addRow("Leste", self.leste)
-        form.addRow("Norte", self.norte)
+        form.addRow(rotulo_com_ajuda("Oeste", "Longitude do limite oeste da área."), self.oeste)
+        form.addRow(rotulo_com_ajuda("Sul", "Latitude do limite sul da área."), self.sul)
+        form.addRow(rotulo_com_ajuda("Leste", "Longitude do limite leste da área."), self.leste)
+        form.addRow(rotulo_com_ajuda("Norte", "Latitude do limite norte da área."), self.norte)
         detalhes.layout_principal.addLayout(form)
         salvar_perfil = botao("Salvar como perfil local")
         salvar_perfil.clicked.connect(self._salvar_perfil)
@@ -462,10 +728,10 @@ class MainWindow(QtWidgets.QMainWindow):
         form_fonte.addRow("Bandas", self.bandas)
         form_fonte.addRow("Pasta de download", self.pasta_download)
         form_fonte.addRow("Catálogo CSV", self.catalogo)
-        form_fonte.addRow("Timeout", self.timeout_segundos)
-        form_fonte.addRow("Chunk", self.chunk_mb)
-        form_fonte.addRow("Cenas padrão", self.max_itens_teste)
-        form_fonte.addRow("Candidatos máximos", self.max_candidatos_teste)
+        form_fonte.addRow(rotulo_com_ajuda("Timeout", "Tempo máximo de espera por uma resposta do servidor."), self.timeout_segundos)
+        form_fonte.addRow(rotulo_com_ajuda("Chunk", "Tamanho de cada bloco usado ao baixar arquivos."), self.chunk_mb)
+        form_fonte.addRow(rotulo_com_ajuda("Cenas padrão", "Quantidade de cenas usada em execuções de teste."), self.max_itens_teste)
+        form_fonte.addRow(rotulo_com_ajuda("Candidatos máximos", "Limite de cenas avaliadas antes de aplicar os filtros."), self.max_candidatos_teste)
         fonte.layout_principal.addLayout(form_fonte)
         fonte.layout_principal.addStretch()
         layout.addWidget(fonte, 1)
@@ -473,11 +739,18 @@ class MainWindow(QtWidgets.QMainWindow):
         qualidade = Cartao("Qualidade e visualização", "Filtre antes de baixar as bandas científicas maiores.")
         form_qualidade = QtWidgets.QFormLayout()
         form_qualidade.addRow(self.filtrar_nuvens)
-        form_qualidade.addRow("Limite de nuvens", self.nuvem_max_pct)
+        form_qualidade.addRow(rotulo_com_ajuda("Limite de nuvens", "Descarta cenas cuja cobertura de nuvens exceda este percentual."), self.nuvem_max_pct)
         form_qualidade.addRow(self.manter_scl)
         form_qualidade.addRow(self.gerar_rgb)
-        form_qualidade.addRow("Tamanho do preview", self.tamanho_max_px)
-        form_qualidade.addRow("Qualidade JPEG", self.qualidade_jpeg)
+        form_qualidade.addRow(rotulo_com_ajuda("Tamanho do preview", "Maior dimensão em pixels da imagem RGB de prévia."), self.tamanho_max_px)
+        form_qualidade.addRow(rotulo_com_ajuda("Qualidade JPEG", "Qualidade de compressão das prévias RGB; valores maiores geram arquivos maiores."), self.qualidade_jpeg)
+        form_qualidade.addRow(self.gerar_dataset)
+        form_qualidade.addRow("Tamanho do patch", self.patch_tamanho_px)
+        form_qualidade.addRow(rotulo_com_ajuda("Stride do patch", "Distância entre patches consecutivos; menor que o tamanho do patch cria sobreposição."), self.patch_stride_px)
+        form_qualidade.addRow(rotulo_com_ajuda("Nuvem máxima por patch", "Descarta patches cuja proporção de nuvens exceda este percentual."), self.patch_nuvem_max_pct)
+        form_qualidade.addRow(rotulo_com_ajuda("Dados válidos mínimos", "Mantém somente patches com pelo menos este percentual de pixels válidos."), self.dados_validos_min_pct)
+        form_qualidade.addRow(rotulo_com_ajuda("RGB dataset mínimo", "Limite inferior para converter valores científicos em RGB."), self.dataset_rgb_minimo)
+        form_qualidade.addRow(rotulo_com_ajuda("RGB dataset máximo", "Limite superior para converter valores científicos em RGB."), self.dataset_rgb_maximo)
         qualidade.layout_principal.addLayout(form_qualidade)
         qualidade.layout_principal.addStretch()
         layout.addWidget(qualidade, 1)
@@ -508,7 +781,7 @@ class MainWindow(QtWidgets.QMainWindow):
         form_destino = QtWidgets.QFormLayout()
         form_destino.addRow("Nome da pasta remota", self.pasta_remota)
         form_destino.addRow("ID da pasta pai", self.pasta_id)
-        form_destino.addRow("Tamanho do lote", self.tamanho_lote)
+        form_destino.addRow(rotulo_com_ajuda("Tamanho do lote", "Número de arquivos enviados ao Google Drive por lote."), self.tamanho_lote)
         destino.layout_principal.addLayout(form_destino)
         layout.addWidget(destino)
 
@@ -587,12 +860,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stack.setCurrentIndex(indice)
         self.titulo_pagina.setText(self.PAGINAS[indice][0])
         self.subtitulo_pagina.setText(self.PAGINAS[indice][1])
+        if indice == 1:
+            QtCore.QTimer.singleShot(0, self.mapa.reativar)
+            QtCore.QTimer.singleShot(200, self.mapa.reativar)
 
     def _atualizar_operacao(self) -> None:
         operacao = self.operacao.currentData()
         mensagens = {
             "catalogar": "Consulta o INPE e atualiza o catálogo CSV sem baixar GeoTIFFs.",
             "baixar": "Filtra nuvens, baixa as bandas aprovadas e gera previews RGB.",
+            "dataset": "Reutiliza GeoTIFFs locais e gera patches científicos e RGB PNG.",
             "sincronizar": "Envia as imagens locais ao Google Drive em lotes configuráveis.",
         }
         self.resumo_operacao.setText(mensagens[str(operacao)])
@@ -616,7 +893,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "stac_url": self.stac_url.text().strip() or "https://data.inpe.br/bdc/stac/v1/",
             "inicio": self.inicio.date().toString(QtCore.Qt.DateFormat.ISODate),
             "fim": self.fim.date().toString(QtCore.Qt.DateFormat.ISODate),
-            "bandas": bandas or ["B02", "B03", "B04", "B08", "NDVI"],
+            "bandas": bandas or GeradorConfiguracao.BANDAS_PADRAO,
             "filtrar_nuvens": self.filtrar_nuvens.isChecked(),
             "manter_scl": self.manter_scl.isChecked(),
             "gerar_rgb": self.gerar_rgb.isChecked(),
@@ -625,6 +902,14 @@ class MainWindow(QtWidgets.QMainWindow):
             "catalogo": self.catalogo.text().strip() or "catalogo/catalogo_imagens.csv",
             "tamanho_max_px": self.tamanho_max_px.value(),
             "qualidade_jpeg": self.qualidade_jpeg.value(),
+            "gerar_dataset": self.gerar_dataset.isChecked(),
+            "patch_tamanho_px": int(self.patch_tamanho_px.currentData()),
+            "patch_stride_px": self.patch_stride_px.value(),
+            "patch_nuvem_max_pct": self.patch_nuvem_max_pct.value(),
+            "dados_validos_min_pct": self.dados_validos_min_pct.value(),
+            "dataset_rgb_metodo": "fixed",
+            "dataset_rgb_minimo": self.dataset_rgb_minimo.value(),
+            "dataset_rgb_maximo": self.dataset_rgb_maximo.value(),
             "timeout_segundos": self.timeout_segundos.value(),
             "chunk_mb": self.chunk_mb.value(),
             "max_itens_teste": self.max_itens_teste.value(),
@@ -677,6 +962,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 max_itens=self.max_execucao.value(),
                 oauth_json=self.oauth_json.text().strip(),
                 tamanho_lote=self.tamanho_lote.value(),
+                patch_size=int(self.patch_tamanho_px.currentData()),
+                patch_stride=self.patch_stride_px.value(),
             )
         except (FileNotFoundError, TypeError, ValueError) as erro:
             QtWidgets.QMessageBox.warning(self, "Não foi possível executar", str(erro))
@@ -737,7 +1024,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         try:
             oeste, sul, leste, norte = normalizar_bbox(bbox)
-        except ValueError as erro:
+        except (TypeError, ValueError) as erro:
             self.statusBar().showMessage(str(erro), 5000)
             return
         self.oeste.setValue(oeste)

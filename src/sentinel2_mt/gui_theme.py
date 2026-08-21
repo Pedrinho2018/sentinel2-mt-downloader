@@ -129,6 +129,37 @@ QDoubleSpinBox:disabled::up-button, QDoubleSpinBox:disabled::down-button {
 QComboBox:disabled QAbstractItemView {
     color: %(desabilitado_texto)s; background-color: %(desabilitado_fundo)s;
 }
+QSlider#numericSlider::groove:horizontal {
+    height: 8px; background: %(borda_suave)s; border-radius: 4px;
+}
+QSlider#numericSlider::sub-page:horizontal {
+    background: %(destaque)s; border-radius: 4px;
+}
+QSlider#numericSlider::add-page:horizontal {
+    background: #dce9e3; border-radius: 4px;
+}
+QSlider#numericSlider::handle:horizontal {
+    background: %(destaque_claro)s; border: 2px solid %(destaque)s;
+    width: 18px; height: 18px; margin: -7px 0; border-radius: 10px;
+}
+QSlider#numericSlider::handle:horizontal:hover { background: #7be0ac; }
+QSlider#numericSlider:disabled::sub-page { background: %(desabilitado_fundo)s; }
+QSlider#numericSlider:disabled::handle {
+    background: %(desabilitado_fundo)s; border-color: %(borda)s;
+}
+QLabel#numericSliderValue {
+    color: %(destaque)s; background: %(secundario_fundo)s; border: 1px solid %(borda)s;
+    border-radius: 6px; padding: 5px 7px; font-weight: 700;
+}
+QLabel#numericSliderValue:disabled { color: %(desabilitado_texto)s; background: %(desabilitado_fundo)s; }
+QToolButton#helpIcon {
+    color: %(destaque)s; background: %(secundario_fundo)s; border: 1px solid %(borda)s;
+    border-radius: 9px; min-width: 18px; max-width: 18px; min-height: 18px; max-height: 18px;
+    padding: 0; font-weight: 800;
+}
+QToolButton#helpIcon:hover, QToolButton#helpIcon:focus {
+    color: %(superficie)s; background: %(destaque)s; border-color: %(destaque)s;
+}
 QCheckBox { color: %(texto)s; spacing: 8px; }
 QComboBox QAbstractItemView, QMenu, QCalendarWidget, QDialog, QMessageBox {
     color: %(texto)s; background: %(superficie)s; selection-color: %(destaque_texto)s;

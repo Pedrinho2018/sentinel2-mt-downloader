@@ -20,13 +20,21 @@ def main() -> int:
 
     indice = 0
 
-    def capturar() -> None:
+    def salvar_e_avancar() -> None:
         nonlocal indice
-        janela._navegar(indice)
-        app.processEvents()
         if not janela.grab().save(str(CAPTURAS[indice])):
             app.exit(2)
             return
+        if indice == 1:
+            imagem = janela.mapa.grab().toImage()
+            cores = {
+                imagem.pixelColor(x, y).rgba()
+                for x in range(0, imagem.width(), max(1, imagem.width() // 12))
+                for y in range(0, imagem.height(), max(1, imagem.height() // 8))
+            }
+            if len(cores) < 5:
+                app.exit(4)
+                return
         indice += 1
         if indice < len(CAPTURAS):
             QtCore.QTimer.singleShot(500, capturar)
@@ -44,6 +52,25 @@ def main() -> int:
                 return
             janela.close()
             app.exit(0)
+
+    def aguardar_mapa(tentativa: int = 0) -> None:
+        def verificar(pronto: bool) -> None:
+            if pronto:
+                QtCore.QTimer.singleShot(700, salvar_e_avancar)
+            elif tentativa >= 40:
+                app.exit(3)
+            else:
+                QtCore.QTimer.singleShot(250, lambda: aguardar_mapa(tentativa + 1))
+
+        janela.mapa.page().runJavaScript("window.mapReady === true", verificar)
+
+    def capturar() -> None:
+        janela._navegar(indice)
+        app.processEvents()
+        if indice == 1:
+            aguardar_mapa()
+        else:
+            salvar_e_avancar()
 
     QtCore.QTimer.singleShot(3500, capturar)
     return app.exec()

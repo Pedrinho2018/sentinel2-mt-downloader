@@ -26,6 +26,7 @@ class TestGuiQt(TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        cls.mapa_widget_original = gui.MapaWidget
 
         class MapaFake(QtWidgets.QWidget):
             areaSelecionada = QtCore.Signal(object)
@@ -40,7 +41,14 @@ class TestGuiQt(TestCase):
             def capturar_bbox(self):
                 self.areaSelecionada.emit(self.bbox)
 
+            def reativar(self):
+                pass
+
         gui.MapaWidget = MapaFake
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        gui.MapaWidget = cls.mapa_widget_original
 
     def setUp(self) -> None:
         self.temporario = TemporaryDirectory()
@@ -97,6 +105,23 @@ class TestGuiQt(TestCase):
         self.assertAlmostEqual(self.janela.sul.value(), -14.2)
         self.assertAlmostEqual(self.janela.leste.value(), -57.1)
         self.assertAlmostEqual(self.janela.norte.value(), -12.4)
+
+    def test_controles_numericos_usam_deslizadores_e_preservam_precision(self) -> None:
+        self.assertIsInstance(self.janela.nuvem_max_pct.deslizador, QtWidgets.QSlider)
+        self.assertEqual(
+            self.janela.nuvem_max_pct.deslizador.orientation(),
+            QtCore.Qt.Orientation.Horizontal,
+        )
+        self.janela._receber_bbox([-61.650006, -18.050006, -50.200006, -7.300006])
+
+        self.assertEqual(self.janela.oeste.value(), -61.650006)
+        self.assertEqual(self.janela.norte.value(), -7.300006)
+        self.assertTrue(self.janela.findChildren(QtWidgets.QToolButton, "helpIcon"))
+        self.assertTrue(
+            all(icone.toolTip() for icone in self.janela.findChildren(QtWidgets.QToolButton, "helpIcon"))
+        )
+        self.assertEqual(self.janela.chunk_mb.rotulo_valor.text(), "1 MB")
+        self.assertEqual(self.janela.dataset_rgb_minimo.rotulo_valor.text(), "0")
 
     def test_perfis_sao_agrupados_e_carregados_corretamente(self) -> None:
         primeiro = self.janela.store.salvar(
