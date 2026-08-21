@@ -384,6 +384,95 @@ class TestGeradorDataset(TestCase):
         self.assertNotEqual(base, outro_alias)
         self.assertNotIn("/", base)
 
+    def test_patch_id_distingue_grade_crs_e_bandas(self) -> None:
+        parametros = {
+            "collection": "S2-16D-2",
+            "date": "2025-10-01",
+            "transformacao": TRANSFORM,
+            "crs": CRS,
+            "bandas": ("B02", "B03"),
+        }
+        base = GeradorDataset.patch_id("cena", 0, 0, 256, **parametros)
+        outra_grade = GeradorDataset.patch_id(
+            "cena",
+            0,
+            0,
+            256,
+            **{**parametros, "transformacao": from_origin(500010, 1000000, 10, 10)},
+        )
+        outro_crs = GeradorDataset.patch_id(
+            "cena", 0, 0, 256, **{**parametros, "crs": "EPSG:4326"}
+        )
+        outras_bandas = GeradorDataset.patch_id(
+            "cena", 0, 0, 256, **{**parametros, "bandas": ("B02", "B04")}
+        )
+
+        self.assertEqual(len({base, outra_grade, outro_crs, outras_bandas}), 4)
+
+    def test_nova_receita_remove_produtos_da_receita_obsoleta(self) -> None:
+        with TemporaryDirectory() as temporario:
+            raiz = Path(temporario)
+            cena, arquivos, auxiliares = cena_sintetica(raiz, 256)
+            config = ConfiguracaoDataset(
+                gerar=True,
+                patches=ConfiguracaoPatches(tamanho_px=256, stride_px=256),
+            )
+            gerador = GeradorDataset(config, raiz, saida=lambda _: None)
+            antigos, _ = gerador.gerar_cena(
+                scene_id="S2_TESTE",
+                collection="S2-16D-2",
+                date="2025-10-01",
+                source_scene=cena,
+                arquivos=arquivos,
+                auxiliares=auxiliares,
+            )
+            pasta_antiga = (raiz / antigos[0].geotiff_path).parent
+
+            novos, _ = gerador.gerar_cena(
+                scene_id="S2_TESTE",
+                collection="S2-16D-2",
+                date="2025-10-01",
+                source_scene=cena,
+                arquivos={nome: caminho for nome, caminho in arquivos.items() if nome != "B08"},
+                auxiliares=auxiliares,
+            )
+
+            self.assertNotEqual(antigos[0].patch_id, novos[0].patch_id)
+            self.assertFalse(pasta_antiga.exists())
+            self.assertTrue((raiz / novos[0].geotiff_path).is_file())
+
+    def test_manifest_nao_publica_caminho_scl_descartavel(self) -> None:
+        with TemporaryDirectory() as temporario:
+            raiz = Path(temporario)
+            cena, arquivos, auxiliares = cena_sintetica(raiz, 256)
+            config = ConfiguracaoDataset(
+                gerar=True,
+                patches=ConfiguracaoPatches(tamanho_px=256, stride_px=256),
+            )
+
+            registros, _ = GeradorDataset(config, raiz, saida=lambda _: None).gerar_cena(
+                scene_id="S2_TESTE",
+                collection="S2-16D-2",
+                date="2025-10-01",
+                source_scene=cena,
+                arquivos=arquivos,
+                auxiliares=auxiliares,
+                manter_scl=False,
+            )
+
+            registro = registros[0]
+            metadata = json.loads(
+                ((raiz / registro.geotiff_path).parent / "metadata.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(registro.scl_path, "")
+            self.assertNotIn("SCL", metadata["source_assets"]["quality"])
+            self.assertIn("SCL", metadata["quality_processing"]["used_layers"])
+            self.assertEqual(
+                metadata["quality_processing"]["non_persistent_layers"], ["SCL"]
+            )
+
     def test_limite_preventivo_rejeita_stride_excessivamente_denso(self) -> None:
         with TemporaryDirectory() as temporario:
             raiz = Path(temporario)

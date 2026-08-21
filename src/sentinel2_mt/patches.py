@@ -61,6 +61,7 @@ class GeradorDataset:
         arquivos: dict[str, Path],
         auxiliares: dict[str, Path] | None = None,
         bandas_desejadas: tuple[str, ...] | list[str] | None = None,
+        manter_scl: bool = True,
     ) -> tuple[list[RegistroPatch], ResumoDataset]:
         auxiliares = auxiliares or {}
         desejadas = tuple(bandas_desejadas or arquivos.keys())
@@ -132,6 +133,9 @@ class GeradorDataset:
                         patches.tamanho_px,
                         collection=collection,
                         date=date,
+                        transformacao=transformacao,
+                        crs=referencia.crs,
+                        bandas=tuple(alinhados),
                     )
                     base = self._registro_base(
                         patch_id=patch_id,
@@ -146,6 +150,7 @@ class GeradorDataset:
                         bandas=tuple(alinhados),
                         ausentes=ausentes,
                         auxiliares=auxiliares,
+                        manter_scl=manter_scl,
                     )
                     if cloud_pct is not None and cloud_pct > patches.nuvem_max_pct:
                         self._limpar_produtos_patch(base)
@@ -180,6 +185,7 @@ class GeradorDataset:
                             source_scene=source_scene,
                             auxiliares=auxiliares,
                             fontes=arquivos,
+                            manter_scl=manter_scl,
                         )
                         resumo.aprovados += 1
                         base.status = "APROVADO" if scl is not None else "APROVADO_SEM_SCL"
@@ -194,6 +200,7 @@ class GeradorDataset:
                         self.saida(f"[PATCH] {numero:03d} | ERRO | {exc}")
                     registros.append(base)
 
+        self._limpar_produtos_obsoletos_cena(date, scene_id, registros)
         self._imprimir_resumo(resumo)
         return registros, resumo
 
@@ -281,6 +288,7 @@ class GeradorDataset:
         source_scene: Path,
         auxiliares: dict[str, Path],
         fontes: dict[str, Path],
+        manter_scl: bool,
     ) -> None:
         pasta = self._pasta_patch(registro)
         pasta.parent.mkdir(parents=True, exist_ok=True)
@@ -337,7 +345,14 @@ class GeradorDataset:
                         },
                         "quality": {
                             nome: self._relativo(caminho) for nome, caminho in auxiliares.items()
+                            if nome != "SCL" or manter_scl
                         },
+                    },
+                    "quality_processing": {
+                        "used_layers": list(auxiliares),
+                        "non_persistent_layers": [
+                            nome for nome in auxiliares if nome == "SCL" and not manter_scl
+                        ],
                     },
                     "native_resolution_m": {
                         nome: RESOLUCAO_NATIVA_METROS.get(nome) for nome in arrays
@@ -370,6 +385,31 @@ class GeradorDataset:
         for nome in ("multiband.tif", "multiband.tif.msk", "rgb.png", "metadata.json"):
             (pasta / nome).unlink(missing_ok=True)
         if pasta.is_dir():
+            try:
+                pasta.rmdir()
+            except OSError:
+                pass
+
+    def _limpar_produtos_obsoletos_cena(
+        self,
+        date: str,
+        scene_id: str,
+        registros: list[RegistroPatch],
+    ) -> None:
+        pasta_cena = caminho_contido(
+            (self.raiz / self.config.pasta).expanduser().resolve(),
+            componente_seguro(date, "sem_data"),
+            componente_seguro(scene_id, "scene"),
+        )
+        if not pasta_cena.is_dir():
+            return
+        atuais = {registro.patch_id for registro in registros}
+        conhecidos = ("multiband.tif", "multiband.tif.msk", "rgb.png", "metadata.json")
+        for pasta in pasta_cena.iterdir():
+            if not pasta.is_dir() or pasta.name in atuais:
+                continue
+            for nome in conhecidos:
+                (pasta / nome).unlink(missing_ok=True)
             try:
                 pasta.rmdir()
             except OSError:
@@ -463,6 +503,7 @@ class GeradorDataset:
         bandas: tuple[str, ...],
         ausentes: list[str],
         auxiliares: dict[str, Path],
+        manter_scl: bool,
     ) -> RegistroPatch:
         tamanho = self.config.patches.tamanho_px
         oeste, sul, leste, norte = array_bounds(tamanho, tamanho, transformacao)
@@ -481,7 +522,11 @@ class GeradorDataset:
             source_scene=self._relativo(source_scene),
             bands=";".join(bandas),
             missing_bands=";".join(ausentes),
-            scl_path=self._relativo(auxiliares["SCL"]) if "SCL" in auxiliares else "",
+            scl_path=(
+                self._relativo(auxiliares["SCL"])
+                if manter_scl and "SCL" in auxiliares
+                else ""
+            ),
             CLEAROB=self._relativo(auxiliares["CLEAROB"]) if "CLEAROB" in auxiliares else "",
             TOTALOB=self._relativo(auxiliares["TOTALOB"]) if "TOTALOB" in auxiliares else "",
             PROVENANCE=self._relativo(auxiliares["PROVENANCE"]) if "PROVENANCE" in auxiliares else "",
@@ -496,9 +541,29 @@ class GeradorDataset:
         *,
         collection: str = "",
         date: str = "",
+        transformacao=None,
+        crs=None,
+        bandas: tuple[str, ...] | list[str] = (),
     ) -> str:
         cena = componente_seguro(scene_id, "scene", limite=80)
-        origem = f"{collection}\0{date}\0{scene_id}".encode("utf-8")
+        grade = tuple(float(valor) for valor in transformacao) if transformacao is not None else ()
+        receita = {
+            "collection": collection,
+            "date": date,
+            "scene_id": scene_id,
+            "x": x,
+            "y": y,
+            "size": tamanho,
+            "transform": grade,
+            "crs": str(crs or ""),
+            "bands": list(bandas),
+        }
+        origem = json.dumps(
+            receita,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
         digest = hashlib.sha256(origem).hexdigest()[:12]
         return f"{cena}_{digest}_x{x:06d}_y{y:06d}_{tamanho}"
 

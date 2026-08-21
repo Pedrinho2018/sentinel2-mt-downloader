@@ -31,16 +31,19 @@ jobs:
           cache: pip
           cache-dependency-path: |
             requirements.txt
+            requirements-gui.txt
             requirements-build.txt
 
       - name: Definir versão
         id: version
         shell: bash
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
         run: |
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
           else
-            VERSION="${{ inputs.version }}"
+            VERSION="$DISPATCH_VERSION"
           fi
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Versão inválida: $VERSION" >&2
@@ -51,9 +54,18 @@ jobs:
       - name: Instalar dependências de build
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt -r requirements-build.txt
+          python -m pip install -r requirements-gui.txt -r requirements-build.txt
           sudo apt-get update
-          sudo apt-get install --yes rpm
+          sudo apt-get install --yes \
+            rpm \
+            libegl1 \
+            libgl1 \
+            libxkbcommon-x11-0 \
+            libxcb-cursor0 \
+            libnss3 \
+            libasound2 \
+            libdbus-1-3 \
+            libfontconfig1
 
       - name: Conferir versão do código
         env:
@@ -69,18 +81,33 @@ jobs:
           PY
 
       - name: Executar testes
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: python -m unittest discover -v
 
       - name: Gerar executável autocontido
         run: python -m PyInstaller --noconfirm --clean packaging/sentinel2-mt.spec
 
       - name: Validar executável
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QTWEBENGINE_DISABLE_SANDBOX: "1"
+          QTWEBENGINE_CHROMIUM_FLAGS: --disable-gpu
         run: |
           ./dist/sentinel2-mt --version
           ./dist/sentinel2-mt --help
+          timeout 30s ./dist/sentinel2-mt --gui --smoke-test
 
       - name: Gerar DEB, RPM e PKGBUILD
         run: packaging/build_linux_packages.sh "${{ steps.version.outputs.version }}"
+
+      - name: Validar wrapper e binário distribuídos
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QTWEBENGINE_DISABLE_SANDBOX: "1"
+        run: |
+          ./release/sentinel2-mt-wrapper.sh --version
+          ./release/sentinel2-mt-wrapper.sh --help
 
       - name: Gerar pacote Arch Linux
         run: |
