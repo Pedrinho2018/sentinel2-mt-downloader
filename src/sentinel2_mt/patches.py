@@ -10,6 +10,7 @@ from typing import Callable
 
 import numpy as np
 from PIL import Image
+import uuid
 import rasterio
 from rasterio.enums import Resampling
 from rasterio.transform import array_bounds
@@ -293,8 +294,11 @@ class GeradorDataset:
         pasta = self._pasta_patch(registro)
         pasta.parent.mkdir(parents=True, exist_ok=True)
         gerados: set[str] = set()
+        rgb_gerado: str | None = None
+
         with TemporaryDirectory(prefix=f".{registro.patch_id}.", dir=pasta.parent) as temporario:
             pasta_temporaria = Path(temporario)
+
             if self.config.gerar_geotiff_multibanda:
                 geotiff = pasta_temporaria / "multiband.tif"
                 self._gravar_geotiff(
@@ -313,14 +317,29 @@ class GeradorDataset:
                 if (pasta_temporaria / "multiband.tif.msk").is_file():
                     gerados.add("multiband.tif.msk")
 
-            if self.config.rgb.gerar_png and all(nome in arrays for nome in ("B04", "B03", "B02")):
+            if self.config.rgb.gerar_png and all(
+                nome in arrays for nome in ("B04", "B03", "B02")
+            ):
                 rgb = self.processador.gerar_rgb_array(
-                    (arrays["B04"].data, arrays["B03"].data, arrays["B02"].data),
-                    (mascaras["B04"], mascaras["B03"], mascaras["B02"]),
+                    (
+                        arrays["B04"].data,
+                        arrays["B03"].data,
+                        arrays["B02"].data,
+                    ),
+                    (
+                        mascaras["B04"],
+                        mascaras["B03"],
+                        mascaras["B02"],
+                    ),
                     self.config.rgb,
                 )
-                Image.fromarray(rgb, mode="RGB").save(pasta_temporaria / "rgb.png", "PNG")
-                gerados.add("rgb.png")
+
+                rgb_gerado = f"{uuid.uuid4().hex}.PNG"
+                Image.fromarray(rgb, mode="RGB").save(
+                    pasta_temporaria / rgb_gerado,
+                    "PNG",
+                )
+                gerados.add(rgb_gerado)
 
             if self.config.gerar_metadata_json:
                 metadata = {
@@ -369,22 +388,48 @@ class GeradorDataset:
                 gerados.add("metadata.json")
 
             pasta.mkdir(parents=True, exist_ok=True)
+
             for nome in gerados:
                 os.replace(pasta_temporaria / nome, pasta / nome)
-            conhecidos = {"multiband.tif", "multiband.tif.msk", "rgb.png", "metadata.json"}
+
+            conhecidos = {
+                "multiband.tif",
+                "multiband.tif.msk",
+                "metadata.json",
+            }
             for nome in conhecidos - gerados:
                 (pasta / nome).unlink(missing_ok=True)
 
+            # Remove PNGs de execuções anteriores, preservando apenas o PNG
+            # gerado nesta execução. A comparação do sufixo é case-insensitive
+            # para também eliminar o antigo "rgb.png".
+            for arquivo in pasta.iterdir():
+                if (
+                    arquivo.is_file()
+                    and arquivo.suffix.lower() == ".png"
+                    and arquivo.name not in gerados
+                ):
+                    arquivo.unlink(missing_ok=True)
+
         if "multiband.tif" in gerados:
             registro.geotiff_path = self._relativo(pasta / "multiband.tif")
-        if "rgb.png" in gerados:
-            registro.rgb_png = self._relativo(pasta / "rgb.png")
+
+        if rgb_gerado is not None:
+            registro.rgb_png = self._relativo(pasta / rgb_gerado)
+        else:
+            registro.rgb_png = ""
 
     def _limpar_produtos_patch(self, registro: RegistroPatch) -> None:
         pasta = self._pasta_patch(registro)
-        for nome in ("multiband.tif", "multiband.tif.msk", "rgb.png", "metadata.json"):
+
+        for nome in ("multiband.tif", "multiband.tif.msk", "metadata.json"):
             (pasta / nome).unlink(missing_ok=True)
+
         if pasta.is_dir():
+            for arquivo in pasta.iterdir():
+                if arquivo.is_file() and arquivo.suffix.lower() == ".png":
+                    arquivo.unlink(missing_ok=True)
+
             try:
                 pasta.rmdir()
             except OSError:
@@ -403,13 +448,21 @@ class GeradorDataset:
         )
         if not pasta_cena.is_dir():
             return
+
         atuais = {registro.patch_id for registro in registros}
-        conhecidos = ("multiband.tif", "multiband.tif.msk", "rgb.png", "metadata.json")
+        conhecidos = ("multiband.tif", "multiband.tif.msk", "metadata.json")
+
         for pasta in pasta_cena.iterdir():
             if not pasta.is_dir() or pasta.name in atuais:
                 continue
+
             for nome in conhecidos:
                 (pasta / nome).unlink(missing_ok=True)
+
+            for arquivo in pasta.iterdir():
+                if arquivo.is_file() and arquivo.suffix.lower() == ".png":
+                    arquivo.unlink(missing_ok=True)
+
             try:
                 pasta.rmdir()
             except OSError:
