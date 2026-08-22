@@ -2,6 +2,9 @@
 Type=Application
 Name=Sentinel-2 MT Downloader
 Comment=Catálogo, download e sincronização de imagens Sentinel-2
-Exec=sentinel2-mt
-Terminal=true
+Exec=sentinel2-mt --gui
+TryExec=sentinel2-mt
+Icon=applications-science
+Terminal=false
+StartupNotify=true
 Categories=Science;Geography;

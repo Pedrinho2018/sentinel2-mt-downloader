@@ -24,13 +24,20 @@ python iniciar_gui.py --setup-only
 - log em tempo real, estado da operação e cancelamento seguro;
 - escolha do JSON OAuth e sincronização em lotes;
 - geração e revisão visual do `config.yaml`;
+- configuração de patches 256/512, stride, nuvem e dados válidos mínimos;
+- geração do dataset junto ao download ou a partir das cenas locais;
 - perfis locais de região em SQLite, sem armazenar OAuth ou tokens;
 - abertura da pasta de imagens e visualização dos previews RGB.
 
 ## Observação
 
-A seleção de área usa o OpenStreetMap sem chave de API. Se o mapa estiver sem
-conexão, as quatro coordenadas ainda podem ser preenchidas manualmente.
+O mapa é carregado somente ao abrir **Área e período**. A biblioteca Leaflet é
+buscada no unpkg e, se necessário, no jsDelivr; durante a inicialização a GUI
+mostra **Carregando mapa...** e mantém uma mensagem visível se a biblioteca ou
+o documento não responder. Para tentar novamente, saia da página e abra-a de
+novo. Sem conexão, ou se apenas os tiles do OpenStreetMap falharem, o mapa pode
+ficar indisponível ou sem fundo, mas as quatro coordenadas continuam editáveis
+manualmente.
 
 O token é criado automaticamente no primeiro login e não deve ser versionado.
 Depois do consentimento, o callback local exibe uma página responsiva com o
@@ -62,6 +69,25 @@ deve publicar/verificar o aplicativo. Consulte a
 O projeto solicita apenas `https://www.googleapis.com/auth/drive.file`. Se a URL
 de autorização ainda mostrar `https://www.googleapis.com/auth/drive`, feche a
 instância antiga da GUI e abra novamente com `python iniciar_gui.py`.
+
+## Dataset na GUI
+
+Em **Dados e qualidade**, a GUI expõe as bandas, o limite global da cena, a
+geração do dataset, tamanho/stride dos patches, limite de nuvem por patch,
+percentual mínimo de dados válidos e faixa fixa do RGB PNG. A GUI expõe essa
+faixa fixa; `dataset.rgb.metodo`, percentis, caminhos e toggles avançados
+permanecem configuráveis pela edição externa do YAML.
+
+Na visão geral, **Gerar dataset das cenas locais** executa o pipeline sem novo
+download. A operação **Baixar imagens aprovadas** também gera patches quando
+**Gerar dataset após o download** estiver marcado.
+
+O visualizador da GUI pode abrir JPEG ou PNG, mas isso não altera a hierarquia
+de dados: os GeoTIFFs originais são a fonte científica, os GeoTIFFs multibanda
+são os recortes para ML e o JPEG é somente preview.
+
+A sincronização Google Drive da GUI percorre `download.pasta`. Artefatos em
+`dataset.pasta`, PNG, JSON e `patches.csv` não são sincronizados por padrão.
 
 ## Legibilidade e validação
 

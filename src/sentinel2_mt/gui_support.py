@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,12 @@ def normalizar_bbox(bbox: list[float]) -> list[float]:
         )
 
     oeste, sul, leste, norte = (float(valor) for valor in bbox)
+    if not all(math.isfinite(valor) for valor in (oeste, sul, leste, norte)):
+        raise ValueError("A bounding box deve conter somente coordenadas finitas.")
+    if not all(-180 <= valor <= 180 for valor in (oeste, leste)):
+        raise ValueError("Longitudes devem estar entre -180 e 180 graus.")
+    if not all(-90 <= valor <= 90 for valor in (sul, norte)):
+        raise ValueError("Latitudes devem estar entre -90 e 90 graus.")
     oeste, leste = sorted((oeste, leste))
     sul, norte = sorted((sul, norte))
     if oeste == leste or sul == norte:
@@ -31,14 +39,18 @@ def montar_argumentos_operacao(
     max_itens: int | None = None,
     oauth_json: str = "",
     tamanho_lote: int | None = None,
+    patch_size: int | None = None,
+    patch_stride: int | None = None,
 ) -> list[str]:
     """Traduz o formulário da GUI para argumentos da CLI oficial."""
-    if operacao not in {"catalogar", "baixar", "sincronizar"}:
+    if operacao not in {"catalogar", "baixar", "dataset", "sincronizar"}:
         raise ValueError(f"Operação desconhecida: {operacao}")
 
     argumentos = ["--config", str(Path(config).expanduser())]
     if operacao == "baixar":
         argumentos.append("--baixar")
+    elif operacao == "dataset":
+        argumentos.append("--gerar-dataset")
     elif operacao == "sincronizar":
         argumentos.append("--sincronizar")
 
@@ -51,6 +63,14 @@ def montar_argumentos_operacao(
             if max_itens < 0:
                 raise ValueError("A quantidade máxima de cenas não pode ser negativa.")
             argumentos.extend(["--max-itens", str(max_itens)])
+        if operacao == "dataset" and patch_size is not None:
+            if patch_size not in {256, 512}:
+                raise ValueError("O tamanho do patch deve ser 256 ou 512 pixels.")
+            argumentos.extend(["--patch-size", str(patch_size)])
+        if operacao == "dataset" and patch_stride is not None:
+            if patch_stride <= 0:
+                raise ValueError("O stride do patch deve ser positivo.")
+            argumentos.extend(["--patch-stride", str(patch_stride)])
     else:
         if oauth_json and not oauth_json.startswith("${"):
             oauth = Path(oauth_json).expanduser()
@@ -78,7 +98,7 @@ class LocalConfigStore:
         return conexao
 
     def _inicializar(self) -> None:
-        with self._conectar() as conexao:
+        with closing(self._conectar()) as conexao, conexao:
             conexao.execute(
                 """
                 CREATE TABLE IF NOT EXISTS configuracoes (
@@ -102,7 +122,7 @@ class LocalConfigStore:
         payload.pop("oauth_json", None)
         payload.pop("token_json", None)
 
-        with self._conectar() as conexao:
+        with closing(self._conectar()) as conexao, conexao:
             cursor = conexao.execute(
                 """
                 INSERT INTO configuracoes (nome_regiao, uf, bbox, colecao, payload)
@@ -119,7 +139,7 @@ class LocalConfigStore:
             return int(cursor.lastrowid)
 
     def listar(self) -> list[dict[str, Any]]:
-        with self._conectar() as conexao:
+        with closing(self._conectar()) as conexao:
             linhas = conexao.execute(
                 """
                 SELECT id, nome_regiao, uf, bbox, colecao, payload, created_at
@@ -137,7 +157,7 @@ class LocalConfigStore:
         return dict(sorted(agrupado.items()))
 
     def carregar(self, item_id: int) -> dict[str, Any] | None:
-        with self._conectar() as conexao:
+        with closing(self._conectar()) as conexao:
             linha = conexao.execute(
                 """
                 SELECT id, nome_regiao, uf, bbox, colecao, payload, created_at
@@ -149,7 +169,7 @@ class LocalConfigStore:
         return dict(linha) if linha else None
 
     def excluir(self, item_id: int) -> None:
-        with self._conectar() as conexao:
+        with closing(self._conectar()) as conexao, conexao:
             conexao.execute("DELETE FROM configuracoes WHERE id = ?", (item_id,))
 
     def listar_presets_por_uf(self) -> dict[str, list[dict[str, Any]]]:
@@ -166,5 +186,5 @@ class LocalConfigStore:
         return self.carregar(item_id)
 
     def limpar(self) -> None:
-        with self._conectar() as conexao:
+        with closing(self._conectar()) as conexao, conexao:
             conexao.execute("DELETE FROM configuracoes")
