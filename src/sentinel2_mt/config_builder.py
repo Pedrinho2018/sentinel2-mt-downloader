@@ -10,6 +10,9 @@ class GeradorConfiguracao:
     """Monta e persiste o config.yaml sem depender da interface gráfica."""
 
     BBOX_PADRAO = [-61.65, -18.05, -50.20, -7.30]
+    BANDAS_PADRAO = [
+        "B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B11", "B12", "NDVI", "EVI"
+    ]
 
     @staticmethod
     def validar_bbox(bbox: list[float]) -> list[float]:
@@ -25,7 +28,7 @@ class GeradorConfiguracao:
 
     def gerar(self, dados: dict[str, Any]) -> dict[str, Any]:
         bbox = self.validar_bbox(dados.get("bbox", self.BBOX_PADRAO))
-        bandas = dados.get("bandas", ["B02", "B03", "B04", "B08", "NDVI"])
+        bandas = dados.get("bandas") or list(self.BANDAS_PADRAO)
         return {
             "stac": {
                 "url": dados.get("stac_url", "https://data.inpe.br/bdc/stac/v1/"),
@@ -43,15 +46,42 @@ class GeradorConfiguracao:
             "bandas": bandas,
             "qualidade": {
                 "filtrar_nuvens": bool(dados.get("filtrar_nuvens", True)),
-                "nuvem_max_pct": float(dados.get("nuvem_max_pct", 20)),
+                "nuvem_max_pct": float(dados.get("nuvem_max_pct", 40)),
                 "manter_scl": bool(dados.get("manter_scl", True)),
+                "camadas_auxiliares": dados.get(
+                    "camadas_auxiliares", ["SCL", "CLEAROB", "TOTALOB", "PROVENANCE"]
+                ),
             },
             "preview": {
                 "gerar_rgb": bool(dados.get("gerar_rgb", True)),
                 "tamanho_max_px": int(dados.get("tamanho_max_px", 1600)),
+                "metodo": dados.get("preview_metodo", "percentile"),
                 "percentil_min": float(dados.get("percentil_min", 2)),
                 "percentil_max": float(dados.get("percentil_max", 98)),
                 "qualidade_jpeg": int(dados.get("qualidade_jpeg", 92)),
+            },
+            "dataset": {
+                "gerar": bool(dados.get("gerar_dataset", False)),
+                "pasta": dados.get("pasta_dataset", "data/dataset"),
+                "catalogo": dados.get("catalogo_patches", "catalogo/patches.csv"),
+                "rgb": {
+                    "gerar_png": bool(dados.get("gerar_rgb_png", True)),
+                    "metodo": dados.get("dataset_rgb_metodo", "fixed"),
+                    "minimo": float(dados.get("dataset_rgb_minimo", 0)),
+                    "maximo": float(dados.get("dataset_rgb_maximo", 2000)),
+                    "percentil_min": float(dados.get("dataset_percentil_min", 2)),
+                    "percentil_max": float(dados.get("dataset_percentil_max", 98)),
+                },
+                "patches": {
+                    "habilitado": bool(dados.get("patches_habilitado", True)),
+                    "tamanho_px": int(dados.get("patch_tamanho_px", 512)),
+                    "stride_px": int(dados.get("patch_stride_px", 512)),
+                    "nuvem_max_pct": float(dados.get("patch_nuvem_max_pct", 10)),
+                    "dados_validos_min_pct": float(dados.get("dados_validos_min_pct", 90)),
+                    "max_patches_por_cena": int(dados.get("max_patches_por_cena", 100000)),
+                },
+                "gerar_geotiff_multibanda": bool(dados.get("gerar_geotiff_multibanda", True)),
+                "gerar_metadata_json": bool(dados.get("gerar_metadata_json", True)),
             },
             "download": {
                 "pasta": dados.get("pasta_download", "data/sentinel2"),

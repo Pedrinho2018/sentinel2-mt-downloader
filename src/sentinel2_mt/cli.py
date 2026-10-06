@@ -37,6 +37,13 @@ class AplicacaoCLI:
         parser.add_argument("--fim")
         parser.add_argument("--max-itens", type=int, help="Quantidade de cenas aprovadas; 0 = todas.")
         parser.add_argument("--baixar", action="store_true")
+        parser.add_argument(
+            "--gerar-dataset",
+            action="store_true",
+            help="Gera patches; sem --baixar, reutiliza as cenas GeoTIFF locais.",
+        )
+        parser.add_argument("--patch-size", type=int, choices=(256, 512), help="Tamanho do patch em pixels.")
+        parser.add_argument("--patch-stride", type=int, help="Passo entre patches em pixels.")
         parser.add_argument("--sincronizar", action="store_true", help="Sincroniza imagens com a API do Google Drive.")
         parser.add_argument("--oauth-json", type=Path, help="Arquivo JSON OAuth; sobrescreve a configuração.")
         parser.add_argument("--lote", type=int, help="Sobrescreve o tamanho do lote de sincronização.")
@@ -55,6 +62,13 @@ class AplicacaoCLI:
                 inicio=args.inicio,
                 fim=args.fim,
                 max_itens=args.max_itens,
+                gerar_dataset=(
+                    args.gerar_dataset
+                    or args.patch_size is not None
+                    or args.patch_stride is not None
+                ),
+                patch_size=args.patch_size,
+                patch_stride=args.patch_stride,
             )
             resumo = ServicoSentinel2(config).executar(opcoes)
             return 0 if resumo.erros == 0 else 2

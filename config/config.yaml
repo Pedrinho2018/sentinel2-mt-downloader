@@ -16,18 +16,51 @@ bandas:
 - B02
 - B03
 - B04
+- B05
+- B06
+- B07
 - B08
+- B8A
+- B11
+- B12
 - NDVI
+- EVI
 qualidade:
   filtrar_nuvens: true
-  nuvem_max_pct: 20.0
+  nuvem_max_pct: 40.0
   manter_scl: true
+  camadas_auxiliares:
+  - SCL
+  - CLEAROB
+  - TOTALOB
+  - PROVENANCE
 preview:
   gerar_rgb: true
   tamanho_max_px: 1600
+  metodo: percentile
   percentil_min: 2.0
   percentil_max: 98.0
   qualidade_jpeg: 92
+dataset:
+  gerar: false
+  pasta: data/dataset
+  catalogo: catalogo/patches.csv
+  rgb:
+    gerar_png: true
+    metodo: fixed
+    minimo: 0.0
+    maximo: 2000.0
+    percentil_min: 2.0
+    percentil_max: 98.0
+  patches:
+    habilitado: true
+    tamanho_px: 512
+    stride_px: 512
+    nuvem_max_pct: 10.0
+    dados_validos_min_pct: 90.0
+    max_patches_por_cena: 100000
+  gerar_geotiff_multibanda: true
+  gerar_metadata_json: true
 download:
   pasta: data/sentinel2
   catalogo: catalogo/catalogo_imagens.csv
