@@ -18,9 +18,24 @@ class ProcessadorImagem:
             escala = min(1.0, amostra_px / max(origem.width, origem.height))
             largura = max(1, int(origem.width * escala))
             altura = max(1, int(origem.height * escala))
-            scl = origem.read(1, out_shape=(altura, largura), resampling=Resampling.nearest)
+            scl = origem.read(
+                1,
+                out_shape=(altura, largura),
+                resampling=Resampling.nearest,
+                masked=True,
+            )
+            dados_scl = np.asarray(scl.data)
+            mascara_valida = ~np.ma.getmaskarray(scl) & np.isfinite(dados_scl)
+            if origem.nodata is not None:
+                if np.isnan(origem.nodata):
+                    mascara_valida &= ~np.isnan(dados_scl)
+                else:
+                    mascara_valida &= dados_scl != origem.nodata
 
-        return self.percentual_nuvem_scl(scl)
+        return self.percentual_nuvem_scl(
+            np.asarray(scl.filled(0)),
+            mascara_valida,
+        )
 
     def percentual_nuvem_scl(self, scl: np.ndarray, mascara: np.ndarray | None = None) -> float:
         validos = (scl != 0) & (scl != 1)

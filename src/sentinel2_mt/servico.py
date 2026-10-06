@@ -317,6 +317,7 @@ class ServicoSentinel2:
             bandas_desejadas=tuple(
                 ResolvedorAssets.normalizar(nome) for nome in self.config.bandas
             ),
+            manter_scl=self.config.qualidade.manter_scl,
         )
 
     def _gerar_dataset_local(
@@ -360,6 +361,7 @@ class ServicoSentinel2:
                 resumo.erros += 1
                 resumo_dataset_total.erros += 1
                 self.saida(f"[DATASET] ERRO na cena {scene_id}: {exc}")
+            self._remover_scl_se_configurado(auxiliares)
 
         caminho_catalogo = self.config.caminho(dataset_config.catalogo)
         self.catalogo_patches.salvar(caminho_catalogo, registros_patches)

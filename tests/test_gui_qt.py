@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 import time
@@ -88,6 +89,13 @@ class TestGuiQt(TestCase):
             self.assertEqual(self.janela.titulo_pagina.text(), titulo)
             self.assertTrue(self.janela.stack.currentWidget().isVisible())
 
+        self.assertEqual(self.janela.PAGINAS[-2][0], "Sobre")
+        self.assertEqual(self.janela.PAGINAS[-1][0], "Preciso de ajuda")
+        self.janela.botoes_navegacao[-1].click()
+        self.app.processEvents()
+        textos = [label.text() for label in self.janela.stack.currentWidget().findChildren(QtWidgets.QLabel)]
+        self.assertIn("Problemas comuns", textos)
+
     def test_salva_yaml_com_os_dados_do_formulario(self) -> None:
         self.janela.nome_regiao.setText("Norte de MT")
         destino = self.janela._salvar_configuracao(avisar=False)
@@ -96,6 +104,24 @@ class TestGuiQt(TestCase):
         payload = yaml.safe_load(destino.read_text(encoding="utf-8"))
         self.assertEqual(payload["area"]["nome"], "Norte de MT")
         self.assertEqual(payload["sincronizacao"]["tamanho_lote"], 100)
+        self.assertEqual(payload["analise"]["modelo"], "analise/models/best.pt")
+        self.assertEqual(payload["analise"]["confianca_minima"], 0.25)
+
+    def test_bandas_e_colecao_sao_selecionaveis_por_checkbox(self) -> None:
+        self.janela.bandas_checkboxes["B02"].setChecked(False)
+        self.janela.bandas_checkboxes["NDVI"].setChecked(False)
+        self.janela.colecoes_checkboxes["S2_L2A-1"].setChecked(True)
+
+        dados = self.janela._coletar_dados()
+
+        self.assertNotIn("B02", dados["bandas"])
+        self.assertNotIn("NDVI", dados["bandas"])
+        self.assertIn("B03", dados["bandas"])
+        self.assertEqual(dados["colecao"], "S2_L2A-1")
+        self.assertEqual(
+            self.janela.bandas_checkboxes["B02"].accessibleDescription(),
+            self.janela.DESCRICOES_BANDAS["B02"],
+        )
 
     def test_aplica_area_selecionada_no_mapa(self) -> None:
         self.janela.mapa.bbox = [-59.5, -14.2, -57.1, -12.4]
@@ -121,6 +147,10 @@ class TestGuiQt(TestCase):
         self.assertTrue(
             all(icone.toolTip() for icone in self.janela.findChildren(QtWidgets.QToolButton, "helpIcon"))
         )
+        helper = self.janela.findChildren(QtWidgets.QToolButton, "helpIcon")[0]
+        helper.enterEvent(QtCore.QEvent(QtCore.QEvent.Type.Enter))
+        self.assertEqual(QtWidgets.QToolTip.text(), helper.toolTip())
+        helper.leaveEvent(QtCore.QEvent(QtCore.QEvent.Type.Leave))
         self.assertEqual(self.janela.chunk_mb.rotulo_valor.text(), "1 MB")
         self.assertEqual(self.janela.dataset_rgb_minimo.rotulo_valor.text(), "0")
 
@@ -219,6 +249,90 @@ class TestGuiQt(TestCase):
         )
 
         self.janela._definir_execucao(False, "Pronto")
+
+    def test_carrega_resultado_da_analise_em_tela(self) -> None:
+        pasta_dataset = self.pasta / "dataset"
+        pasta_analises = self.pasta / "analises"
+        pasta_dataset.mkdir()
+        pasta_analises.mkdir()
+        self.janela.pasta_analises.setText(str(pasta_analises))
+        self.janela.historico_analises.setText(str(self.pasta / "historico.sqlite3"))
+        self.janela._coletar_dados = lambda: {
+            **gui.MainWindow._coletar_dados(self.janela),
+            "pasta_dataset": str(pasta_dataset),
+            "pasta_analises": str(pasta_analises),
+        }
+        self.assertIsNotNone(self.janela._salvar_configuracao(avisar=False))
+        original = pasta_dataset / "original.png"
+        anotada = pasta_analises / "anotada.png"
+        imagem = gui.QtGui.QPixmap(24, 24)
+        imagem.fill(gui.QtGui.QColor("green"))
+        self.assertTrue(imagem.save(str(original), "PNG"))
+        self.assertTrue(imagem.save(str(anotada), "PNG"))
+        relatorio = pasta_analises / "relatorio.pdf"
+        relatorio.write_bytes(b"%PDF-fake")
+        resultado = pasta_analises / "resultado.json"
+        resultado.write_text(
+            json.dumps(
+                {
+                    "analysis_id": "a1",
+                    "regiao": "Sinop",
+                    "periodo_inicio": "2026-01-01",
+                    "periodo_fim": "2026-03-31",
+                    "scene_ids": ["CENA"],
+                    "dispositivo": "cpu",
+                    "imagem_original": str(original),
+                    "imagem_analisada": str(anotada),
+                    "caminho_relatorio": str(relatorio),
+                    "estatisticas": {
+                        "total_deteccoes": 2,
+                        "por_classe": {"soja": 2},
+                        "confianca_media_por_classe": {"soja": 0.8},
+                        "confianca_minima_por_classe": {"soja": 0.7},
+                        "confianca_maxima_por_classe": {"soja": 0.9},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        self.janela._carregar_resultado_analise(resultado)
+
+        self.assertEqual(self.janela.stack.currentIndex(), 4)
+        self.assertEqual(self.janela.analise_tabela.rowCount(), 1)
+        self.assertEqual(self.janela.analise_tabela.item(0, 0).text(), "soja")
+        self.assertIn("Detecções: 2", self.janela.analise_info.text())
+        self.assertTrue(self.janela.btn_relatorio.isEnabled())
+        self.assertTrue(self.janela.btn_salvar_relatorio.isEnabled())
+
+        destino = self.pasta / "relatorio-exportado.pdf"
+        with patch.object(
+            gui.QtWidgets.QFileDialog,
+            "getSaveFileName",
+            return_value=(str(destino), "Documento PDF (*.pdf)"),
+        ):
+            self.janela._salvar_relatorio_analise()
+        self.assertEqual(destino.read_bytes(), b"%PDF-fake")
+
+    def test_marcador_de_resultado_rejeita_caminho_absoluto_e_traversal(self) -> None:
+        self.janela._operacao_em_execucao = "analisar"
+
+        self.janela._processar_linha_resultado(
+            "[ANALISE_RESULTADO] /tmp/resultado.json"
+        )
+        self.assertIsNone(self.janela._resultado_pendente)
+        self.janela._processar_linha_resultado(
+            "[ANALISE_RESULTADO] ../resultado.json"
+        )
+        self.assertIsNone(self.janela._resultado_pendente)
+
+        self.janela._processar_linha_resultado(
+            "[ANALISE_RESULTADO] data/analises/a1/resultado.json"
+        )
+        self.assertEqual(
+            self.janela._resultado_pendente,
+            gui.ROOT / "data/analises/a1/resultado.json",
+        )
 
     def test_cancela_operacao_em_andamento(self) -> None:
         script = self.pasta / "cli_lenta.py"

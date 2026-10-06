@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,8 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from sentinel2_mt.config_builder import GeradorConfiguracao, gerar_config, salvar_config as persistir_config
+from sentinel2_mt.configuracao import ConfiguracaoProjeto
+from sentinel2_mt.analise.historico import RepositorioHistoricoAnalises
 from sentinel2_mt.gui_support import (
     LocalConfigStore,
     montar_argumentos_operacao,
@@ -36,6 +39,9 @@ else:
     LOCAL_DB = ROOT / "config" / "configuracoes_local.db"
     SCRIPT_CLI = ROOT / "src" / "baixar_inpe_mt.py"
 
+GUI_ASSETS = Path(getattr(sys, "_MEIPASS", ROOT)) / "assets"
+FUNDO_GUI = GUI_ASSETS / "mato-grosso-background.png"
+
 # Compatibilidade com integrações que importavam esta função do módulo da GUI.
 bbox_para_yaml = normalizar_bbox
 
@@ -57,6 +63,22 @@ def botao(texto: str, tipo: str = "secondaryButton") -> QtWidgets.QPushButton:
     return componente
 
 
+class BotaoAjuda(QtWidgets.QToolButton):
+    """Helper contextual que mostra a explicação imediatamente ao passar o mouse."""
+
+    def __init__(self, ajuda: str, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._ajuda = ajuda
+
+    def enterEvent(self, evento: QtCore.QEvent) -> None:
+        QtWidgets.QToolTip.showText(
+            self.mapToGlobal(self.rect().bottomLeft()), self._ajuda, self
+        )
+
+    def leaveEvent(self, evento: QtCore.QEvent) -> None:
+        QtWidgets.QToolTip.hideText()
+
+
 def rotulo_com_ajuda(texto: str, ajuda: str) -> QtWidgets.QWidget:
     """Cria um rótulo compacto com ajuda contextual acessível."""
     conteiner = QtWidgets.QWidget()
@@ -64,9 +86,9 @@ def rotulo_com_ajuda(texto: str, ajuda: str) -> QtWidgets.QWidget:
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(5)
     rotulo = QtWidgets.QLabel(texto)
-    icone = QtWidgets.QToolButton()
+    icone = BotaoAjuda(ajuda)
     icone.setObjectName("helpIcon")
-    icone.setText("?")
+    icone.setText("i")
     icone.setToolTip(ajuda)
     icone.setStatusTip(ajuda)
     icone.setAccessibleName(f"Ajuda: {texto}")
@@ -456,12 +478,31 @@ class MapaWidget(QWebEngineView):
 
 
 class MainWindow(QtWidgets.QMainWindow):
+    DESCRICOES_BANDAS = {
+        "B02": "Azul; destaca água e auxilia na composição RGB.",
+        "B03": "Verde; útil para vegetação e composição RGB.",
+        "B04": "Vermelho; usado na composição RGB e no NDVI.",
+        "B05": "Red edge 1; sensível ao vigor da vegetação.",
+        "B06": "Red edge 2; auxilia na análise de clorofila.",
+        "B07": "Red edge 3; acompanha mudanças na vegetação.",
+        "B08": "Infravermelho próximo; usado no NDVI e na composição falsa-cor.",
+        "B8A": "Infravermelho próximo estreito; red edge de referência.",
+        "B11": "Infravermelho de ondas curtas 1; informa umidade e estrutura.",
+        "B12": "Infravermelho de ondas curtas 2; auxilia em umidade e queimadas.",
+        "NDVI": "Índice de vegetação por diferença normalizada.",
+        "EVI": "Índice de vegetação aprimorado, com menor saturação em áreas densas.",
+    }
+    COLECOES_DISPONIVEIS = ("S2-16D-2", "S2_L2A-1")
     PAGINAS = (
         ("Visão geral", "Execute e acompanhe as operações"),
         ("Área e período", "Escolha a região no mapa"),
         ("Dados e qualidade", "Ajuste STAC, bandas e filtros"),
         ("Google Drive", "Configure OAuth e sincronização"),
+        ("Análise da região", "Consulte detecções, imagens e estatísticas"),
+        ("Histórico", "Acesse análises e relatórios locais"),
         ("Configuração", "Revise YAML e perfis locais"),
+        ("Sobre", "Conheça o aplicativo e seu fluxo de trabalho"),
+        ("Preciso de ajuda", "Encontre orientações para resolver problemas"),
     )
 
     def __init__(self) -> None:
@@ -478,6 +519,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.processo.readyReadStandardOutput.connect(self._ler_saida)
         self.processo.finished.connect(self._processo_finalizado)
         self.processo.errorOccurred.connect(self._erro_processo)
+        self._saida_pendente = ""
+        self._ultimo_resultado: dict[str, Any] | None = None
+        self._operacao_em_execucao = ""
+        self._resultado_pendente: Path | None = None
 
         self._criar_campos()
         self._montar_janela()
@@ -502,10 +547,45 @@ class MainWindow(QtWidgets.QMainWindow):
             campo.setDisplayFormat("dd/MM/yyyy")
 
         self.colecao = QtWidgets.QLineEdit("S2-16D-2")
+        self.colecao.setPlaceholderText("ID de uma coleção personalizada")
+        self.colecoes = QtWidgets.QWidget()
+        layout_colecoes = QtWidgets.QVBoxLayout(self.colecoes)
+        layout_colecoes.setContentsMargins(0, 0, 0, 0)
+        layout_colecoes.setSpacing(2)
+        grupo_colecoes = QtWidgets.QButtonGroup(self)
+        grupo_colecoes.setExclusive(True)
+        self.colecoes_checkboxes: dict[str, QtWidgets.QCheckBox] = {}
+        for nome in self.COLECOES_DISPONIVEIS:
+            caixa = QtWidgets.QCheckBox(nome)
+            caixa.setToolTip("Seleciona esta coleção STAC para a consulta.")
+            grupo_colecoes.addButton(caixa)
+            layout_colecoes.addWidget(caixa)
+            self.colecoes_checkboxes[nome] = caixa
+            caixa.toggled.connect(lambda marcado, valor=nome: self._colecao_marcada(valor, marcado))
+        self.colecoes_checkboxes["S2-16D-2"].setChecked(True)
+        layout_colecoes.addWidget(self.colecao)
+        self.colecao.textChanged.connect(self._colecao_personalizada_alterada)
+
+        self.bandas_checkboxes: dict[str, QtWidgets.QCheckBox] = {}
+        self.bandas_selecao = QtWidgets.QWidget()
+        layout_bandas = QtWidgets.QGridLayout(self.bandas_selecao)
+        layout_bandas.setContentsMargins(0, 0, 0, 0)
+        layout_bandas.setHorizontalSpacing(16)
+        layout_bandas.setVerticalSpacing(5)
+        for indice, (nome, descricao) in enumerate(self.DESCRICOES_BANDAS.items()):
+            caixa = QtWidgets.QCheckBox(nome)
+            caixa.setChecked(True)
+            caixa.setToolTip(descricao)
+            caixa.setAccessibleDescription(descricao)
+            texto = QtWidgets.QLabel(descricao)
+            texto.setWordWrap(True)
+            texto.setStyleSheet("color: #68758a; font-size: 11px;")
+            linha = indice // 2
+            coluna = (indice % 2) * 2
+            layout_bandas.addWidget(caixa, linha, coluna)
+            layout_bandas.addWidget(texto, linha, coluna + 1)
+            self.bandas_checkboxes[nome] = caixa
         self.stac_url = QtWidgets.QLineEdit("https://data.inpe.br/bdc/stac/v1/")
-        self.bandas = QtWidgets.QLineEdit(
-            "B02, B03, B04, B05, B06, B07, B08, B8A, B11, B12, NDVI, EVI"
-        )
         self.filtrar_nuvens = QtWidgets.QCheckBox("Descartar cenas com nuvens/sombra")
         self.filtrar_nuvens.setChecked(True)
         self.manter_scl = QtWidgets.QCheckBox("Manter arquivo SCL")
@@ -524,6 +604,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dados_validos_min_pct = self._inteiro(0, 100, 90, "%")
         self.dataset_rgb_minimo = self._inteiro(-10000, 10000, 0)
         self.dataset_rgb_maximo = self._inteiro(-10000, 30000, 2000)
+
+        self.modelo_ia = QtWidgets.QLineEdit("analise/models/best.pt")
+        self.modelo_sha256 = QtWidgets.QLineEdit()
+        self.modelo_sha256.setPlaceholderText("Opcional: SHA-256 do modelo aprovado")
+        self.confianca_minima = self._inteiro(0, 100, 25, "%")
+        self.iou_maximo = self._inteiro(0, 100, 45, "%")
+        self.tamanho_inferencia_px = self._inteiro(128, 2048, 640, " px")
+        self.pasta_analises = QtWidgets.QLineEdit("data/analises")
+        self.historico_analises = QtWidgets.QLineEdit("data/historico-analises.sqlite3")
+        self.gerar_relatorio = QtWidgets.QCheckBox("Gerar relatório PDF automaticamente")
+        self.gerar_relatorio.setChecked(True)
+        self.max_imagens_analise = self._inteiro(0, 10000, 1000)
+        self.max_imagens_analise.setSpecialValueText("Todas")
 
         self.pasta_download = QtWidgets.QLineEdit("data/sentinel2")
         self.catalogo = QtWidgets.QLineEdit("catalogo/catalogo_imagens.csv")
@@ -544,6 +637,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.operacao.addItem("Catalogar sem baixar", "catalogar")
         self.operacao.addItem("Baixar imagens aprovadas", "baixar")
         self.operacao.addItem("Gerar dataset das cenas locais", "dataset")
+        self.operacao.addItem("Analisar região com IA", "analisar")
         self.operacao.addItem("Sincronizar com Google Drive", "sincronizar")
         self.max_execucao = self._inteiro(0, 1000, 5)
         self.max_execucao.setSpecialValueText("Todas")
@@ -562,6 +656,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.imagem_preview.setObjectName("previewImage")
         self.imagem_preview.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.imagem_preview.setMinimumHeight(210)
+        self.analise_info = QtWidgets.QLabel("Execute 'Analisar região com IA' para ver os resultados.")
+        self.analise_info.setWordWrap(True)
+        self.analise_tabela = QtWidgets.QTableWidget(0, 5)
+        self.analise_tabela.setHorizontalHeaderLabels(
+            ["Classe", "Detecções", "Confiança média", "Mínima", "Máxima"]
+        )
+        self.analise_tabela.horizontalHeader().setStretchLastSection(True)
+        self.analise_original = QtWidgets.QLabel("Imagem RGB original")
+        self.analise_anotada = QtWidgets.QLabel("Imagem com detecções")
+        for imagem in (self.analise_original, self.analise_anotada):
+            imagem.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            imagem.setMinimumHeight(240)
+        self.historico_tabela = QtWidgets.QTableWidget(0, 5)
+        self.historico_tabela.setHorizontalHeaderLabels(
+            ["Data", "Região", "Período", "Detecções", "Relatório"]
+        )
+        self.historico_tabela.horizontalHeader().setStretchLastSection(True)
 
     @staticmethod
     def _inteiro(minimo: int, maximo: int, valor: int, sufixo: str = "") -> ControleNumerico:
@@ -575,6 +686,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def _montar_janela(self) -> None:
         raiz = QtWidgets.QWidget()
         raiz.setObjectName("root")
+        if FUNDO_GUI.is_file():
+            caminho_fundo = FUNDO_GUI.as_posix().replace("'", "\\'")
+            raiz.setStyleSheet(
+                f"QWidget#root {{ border-image: url('{caminho_fundo}') 0 0 0 0 stretch stretch; }}"
+            )
         estrutura = QtWidgets.QHBoxLayout(raiz)
         estrutura.setContentsMargins(0, 0, 0, 0)
         estrutura.setSpacing(0)
@@ -591,7 +707,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stack.addWidget(self._pagina_area())
         self.stack.addWidget(self._pagina_dados())
         self.stack.addWidget(self._pagina_drive())
+        self.stack.addWidget(self._pagina_analise())
+        self.stack.addWidget(self._pagina_historico())
         self.stack.addWidget(self._pagina_config())
+        self.stack.addWidget(self._pagina_sobre())
+        self.stack.addWidget(self._pagina_ajuda())
         layout_area.addWidget(self.stack, 1)
         layout_area.addWidget(self._barra_acoes())
         estrutura.addWidget(area, 1)
@@ -664,10 +784,10 @@ class MainWindow(QtWidgets.QMainWindow):
         topo = QtWidgets.QHBoxLayout()
         operacao = Cartao("Nova operação", "A configuração é salva automaticamente antes da execução.")
         form = QtWidgets.QFormLayout()
-        form.addRow("Operação", self.operacao)
+        form.addRow(rotulo_com_ajuda("Operação", "Define o que será executado: consultar cenas, baixar arquivos, gerar patches, analisar com IA ou sincronizar com o Drive."), self.operacao)
         form.addRow(
             rotulo_com_ajuda(
-                "Máximo de cenas", "Limita quantas cenas serão processadas; em 'Todas', não há limite."
+                "Máximo de cenas", "Limita quantas cenas a operação processará. Se estiver em 'Todas', todas as cenas que passarem pelos filtros serão consideradas."
             ),
             self.max_execucao,
         )
@@ -718,14 +838,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
         detalhes = Cartao("Região e período", "As coordenadas usam a ordem oeste, sul, leste, norte.")
         form = QtWidgets.QFormLayout()
-        form.addRow("Nome", self.nome_regiao)
-        form.addRow("UF", self.uf)
-        form.addRow("Data inicial", self.inicio)
-        form.addRow("Data final", self.fim)
-        form.addRow(rotulo_com_ajuda("Oeste", "Longitude do limite oeste da área."), self.oeste)
-        form.addRow(rotulo_com_ajuda("Sul", "Latitude do limite sul da área."), self.sul)
-        form.addRow(rotulo_com_ajuda("Leste", "Longitude do limite leste da área."), self.leste)
-        form.addRow(rotulo_com_ajuda("Norte", "Latitude do limite norte da área."), self.norte)
+        form.addRow(rotulo_com_ajuda("Nome", "Nome exibido nos perfis, no histórico e nos resultados desta região."), self.nome_regiao)
+        form.addRow(rotulo_com_ajuda("UF", "Sigla de duas letras do estado. É usada para agrupar os perfis locais."), self.uf)
+        form.addRow(rotulo_com_ajuda("Data inicial", "Primeiro dia incluído na busca de cenas. O formato salvo é AAAA-MM-DD."), self.inicio)
+        form.addRow(rotulo_com_ajuda("Data final", "Último dia incluído na busca de cenas. O formato salvo é AAAA-MM-DD."), self.fim)
+        form.addRow(rotulo_com_ajuda("Oeste", "Longitude do lado esquerdo da área. A caixa final é salva como oeste, sul, leste, norte."), self.oeste)
+        form.addRow(rotulo_com_ajuda("Sul", "Latitude do lado inferior da área. Use valores negativos para latitudes ao sul do Equador."), self.sul)
+        form.addRow(rotulo_com_ajuda("Leste", "Longitude do lado direito da área. Deve ser maior que Oeste."), self.leste)
+        form.addRow(rotulo_com_ajuda("Norte", "Latitude do lado superior da área. Deve ser maior que Sul."), self.norte)
         detalhes.layout_principal.addLayout(form)
         salvar_perfil = botao("Salvar como perfil local")
         salvar_perfil.clicked.connect(self._salvar_perfil)
@@ -742,34 +862,43 @@ class MainWindow(QtWidgets.QMainWindow):
 
         fonte = Cartao("Fonte STAC", "Catálogo público do INPE/Brazil Data Cube.")
         form_fonte = QtWidgets.QFormLayout()
-        form_fonte.addRow("URL STAC", self.stac_url)
-        form_fonte.addRow("Coleção", self.colecao)
-        form_fonte.addRow("Bandas", self.bandas)
-        form_fonte.addRow("Pasta de download", self.pasta_download)
-        form_fonte.addRow("Catálogo CSV", self.catalogo)
-        form_fonte.addRow(rotulo_com_ajuda("Timeout", "Tempo máximo de espera por uma resposta do servidor."), self.timeout_segundos)
-        form_fonte.addRow(rotulo_com_ajuda("Chunk", "Tamanho de cada bloco usado ao baixar arquivos."), self.chunk_mb)
-        form_fonte.addRow(rotulo_com_ajuda("Cenas padrão", "Quantidade de cenas usada em execuções de teste."), self.max_itens_teste)
-        form_fonte.addRow(rotulo_com_ajuda("Candidatos máximos", "Limite de cenas avaliadas antes de aplicar os filtros."), self.max_candidatos_teste)
+        form_fonte.addRow(rotulo_com_ajuda("URL STAC", "Endereço do catálogo que fornece metadados e links dos assets Sentinel-2."), self.stac_url)
+        form_fonte.addRow(rotulo_com_ajuda("Coleção", "Escolha uma coleção STAC. A caixa marcada define a coleção consultada; o campo inferior aceita um ID personalizado."), self.colecoes)
+        form_fonte.addRow(rotulo_com_ajuda("Bandas", "Marque as bandas e índices que serão procurados e baixados. B02, B03 e B04 são necessárias para previews e análise RGB."), self.bandas_selecao)
+        form_fonte.addRow(rotulo_com_ajuda("Pasta de download", "Raiz dos rasters originais e dos arquivos auxiliares baixados; não é a pasta do dataset."), self.pasta_download)
+        form_fonte.addRow(rotulo_com_ajuda("Catálogo CSV", "Registro local das cenas, bandas, URLs, arquivos baixados e status de processamento."), self.catalogo)
+        form_fonte.addRow(rotulo_com_ajuda("Timeout", "Tempo máximo, em segundos, aguardado por cada resposta HTTP."), self.timeout_segundos)
+        form_fonte.addRow(rotulo_com_ajuda("Chunk", "Quantidade de megabytes lida por bloco durante um download. Blocos maiores podem usar mais memória."), self.chunk_mb)
+        form_fonte.addRow(rotulo_com_ajuda("Cenas padrão", "Quantidade máxima de cenas usada quando a operação não informa outro limite. Zero significa processar todas."), self.max_itens_teste)
+        form_fonte.addRow(rotulo_com_ajuda("Candidatos máximos", "Limita quantas cenas serão avaliadas antes dos filtros de nuvem e qualidade."), self.max_candidatos_teste)
         fonte.layout_principal.addLayout(form_fonte)
         fonte.layout_principal.addStretch()
         layout.addWidget(fonte, 1)
 
         qualidade = Cartao("Qualidade e visualização", "Filtre antes de baixar as bandas científicas maiores.")
         form_qualidade = QtWidgets.QFormLayout()
-        form_qualidade.addRow(self.filtrar_nuvens)
-        form_qualidade.addRow(rotulo_com_ajuda("Limite de nuvens", "Descarta cenas cuja cobertura de nuvens exceda este percentual."), self.nuvem_max_pct)
-        form_qualidade.addRow(self.manter_scl)
-        form_qualidade.addRow(self.gerar_rgb)
-        form_qualidade.addRow(rotulo_com_ajuda("Tamanho do preview", "Maior dimensão em pixels da imagem RGB de prévia."), self.tamanho_max_px)
-        form_qualidade.addRow(rotulo_com_ajuda("Qualidade JPEG", "Qualidade de compressão das prévias RGB; valores maiores geram arquivos maiores."), self.qualidade_jpeg)
-        form_qualidade.addRow(self.gerar_dataset)
-        form_qualidade.addRow("Tamanho do patch", self.patch_tamanho_px)
-        form_qualidade.addRow(rotulo_com_ajuda("Stride do patch", "Distância entre patches consecutivos; menor que o tamanho do patch cria sobreposição."), self.patch_stride_px)
-        form_qualidade.addRow(rotulo_com_ajuda("Nuvem máxima por patch", "Descarta patches cuja proporção de nuvens exceda este percentual."), self.patch_nuvem_max_pct)
-        form_qualidade.addRow(rotulo_com_ajuda("Dados válidos mínimos", "Mantém somente patches com pelo menos este percentual de pixels válidos."), self.dados_validos_min_pct)
-        form_qualidade.addRow(rotulo_com_ajuda("RGB dataset mínimo", "Limite inferior para converter valores científicos em RGB."), self.dataset_rgb_minimo)
-        form_qualidade.addRow(rotulo_com_ajuda("RGB dataset máximo", "Limite superior para converter valores científicos em RGB."), self.dataset_rgb_maximo)
+        form_qualidade.addRow(rotulo_com_ajuda("Filtro de nuvens", "Ative para rejeitar cenas cuja classificação SCL indique nuvens ou sombra acima do limite abaixo."), self.filtrar_nuvens)
+        form_qualidade.addRow(rotulo_com_ajuda("Limite de nuvens", "Percentual máximo de nuvens e sombras permitido em uma cena. Valores menores deixam o filtro mais rigoroso."), self.nuvem_max_pct)
+        form_qualidade.addRow(rotulo_com_ajuda("Manter SCL", "Guarda o raster de classificação usado para medir nuvens e pixels válidos."), self.manter_scl)
+        form_qualidade.addRow(rotulo_com_ajuda("Gerar preview RGB", "Gera uma imagem JPEG para visualização usando B04 vermelho, B03 verde e B02 azul."), self.gerar_rgb)
+        form_qualidade.addRow(rotulo_com_ajuda("Tamanho do preview", "Define a maior dimensão, em pixels, do JPEG de visualização. Não muda o raster científico."), self.tamanho_max_px)
+        form_qualidade.addRow(rotulo_com_ajuda("Qualidade JPEG", "Controla a compressão do preview. Valores maiores preservam mais detalhes e geram arquivos maiores."), self.qualidade_jpeg)
+        form_qualidade.addRow(rotulo_com_ajuda("Gerar dataset", "Recorta as cenas em patches georreferenciados e, quando possível, gera o RGB PNG de cada patch."), self.gerar_dataset)
+        form_qualidade.addRow(rotulo_com_ajuda("Tamanho do patch", "Lado do recorte em pixels. O tamanho do arquivo não representa aumento da resolução espacial."), self.patch_tamanho_px)
+        form_qualidade.addRow(rotulo_com_ajuda("Stride do patch", "Distância entre o início de dois recortes. Menor que o tamanho do patch cria sobreposição."), self.patch_stride_px)
+        form_qualidade.addRow(rotulo_com_ajuda("Nuvem máxima por patch", "Percentual máximo de pixels classificados como nuvem ou sombra dentro de cada patch."), self.patch_nuvem_max_pct)
+        form_qualidade.addRow(rotulo_com_ajuda("Dados válidos mínimos", "Percentual mínimo de pixels válidos exigido para manter um patch no dataset."), self.dados_validos_min_pct)
+        form_qualidade.addRow(rotulo_com_ajuda("RGB dataset mínimo", "Valor científico inferior usado no recorte para converter as bandas em RGB PNG."), self.dataset_rgb_minimo)
+        form_qualidade.addRow(rotulo_com_ajuda("RGB dataset máximo", "Valor científico superior usado no recorte para converter as bandas em RGB PNG."), self.dataset_rgb_maximo)
+        form_qualidade.addRow(rotulo_com_ajuda("Modelo agrícola", "Arquivo .pt local usado pela análise. O modelo precisa ter sido treinado para imagens Sentinel-2 RGB."), self.modelo_ia)
+        form_qualidade.addRow(rotulo_com_ajuda("SHA-256 do modelo", "Verificação opcional de integridade. O hash deve corresponder exatamente ao arquivo do modelo."), self.modelo_sha256)
+        form_qualidade.addRow(rotulo_com_ajuda("Confiança mínima", "Só aceita detecções com confiança igual ou maior que o valor. Reduzir demais pode gerar falsos positivos."), self.confianca_minima)
+        form_qualidade.addRow(rotulo_com_ajuda("IoU máximo", "Controla quanto duas caixas podem se sobrepor antes de uma ser removida como duplicata."), self.iou_maximo)
+        form_qualidade.addRow(rotulo_com_ajuda("Tamanho da inferência", "Tamanho de entrada usado pelo modelo. Não altera o tamanho nem a resolução do patch original."), self.tamanho_inferencia_px)
+        form_qualidade.addRow(rotulo_com_ajuda("Pasta das análises", "Local dos overlays, resultado.json, relatórios PDF e demais artefatos de cada análise."), self.pasta_analises)
+        form_qualidade.addRow(rotulo_com_ajuda("Histórico local", "Arquivo SQLite que registra metadados e caminhos das análises, sem armazenar os rasters."), self.historico_analises)
+        form_qualidade.addRow(rotulo_com_ajuda("Gerar relatório", "Cria um PDF com resumo, métricas, gráfico de classes e imagens da análise."), self.gerar_relatorio)
+        form_qualidade.addRow(rotulo_com_ajuda("Imagens por análise", "Limita quantos patches aprovados serão enviados ao modelo. Zero significa processar todos."), self.max_imagens_analise)
         qualidade.layout_principal.addLayout(form_qualidade)
         qualidade.layout_principal.addStretch()
         layout.addWidget(qualidade, 1)
@@ -791,16 +920,16 @@ class MainWindow(QtWidgets.QMainWindow):
         linha_oauth.addWidget(self.oauth_json, 1)
         linha_oauth.addWidget(escolher)
         form = QtWidgets.QFormLayout()
-        form.addRow("Credencial OAuth", linha_oauth)
-        form.addRow("Token local", self.token_json)
+        form.addRow(rotulo_com_ajuda("Credencial OAuth", "Arquivo JSON do aplicativo Google para iniciar o login. Nunca compartilhe esse arquivo."), linha_oauth)
+        form.addRow(rotulo_com_ajuda("Token local", "Arquivo protegido que permite reutilizar a autorização sem novo login. Ele não deve ser versionado."), self.token_json)
         credenciais.layout_principal.addLayout(form)
         layout.addWidget(credenciais)
 
         destino = Cartao("Destino e lotes", "A hierarquia local de datas e cenas é preservada no Drive.")
         form_destino = QtWidgets.QFormLayout()
-        form_destino.addRow("Nome da pasta remota", self.pasta_remota)
-        form_destino.addRow("ID da pasta pai", self.pasta_id)
-        form_destino.addRow(rotulo_com_ajuda("Tamanho do lote", "Número de arquivos enviados ao Google Drive por lote."), self.tamanho_lote)
+        form_destino.addRow(rotulo_com_ajuda("Nome da pasta remota", "Nome da pasta principal usada para organizar os arquivos sincronizados."), self.pasta_remota)
+        form_destino.addRow(rotulo_com_ajuda("ID da pasta pai", "ID da pasta do Drive dentro da qual a pasta remota será criada ou procurada."), self.pasta_id)
+        form_destino.addRow(rotulo_com_ajuda("Tamanho do lote", "Quantidade de arquivos enviada por rodada. Lotes menores facilitam acompanhar falhas e retomadas."), self.tamanho_lote)
         destino.layout_principal.addLayout(form_destino)
         layout.addWidget(destino)
 
@@ -848,6 +977,136 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(perfis, 1)
         return pagina
 
+    def _pagina_analise(self) -> QtWidgets.QWidget:
+        pagina = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(pagina)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+
+        resumo = Cartao(
+            "Análise da região",
+            "As contagens vêm de caixas detectadas; caixas não equivalem à área real dos talhões.",
+        )
+        resumo.layout_principal.addWidget(self.analise_info)
+        resumo.layout_principal.addWidget(self.analise_tabela)
+        layout.addWidget(resumo, 1)
+
+        imagens = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        original = Cartao("Imagem RGB original")
+        original.layout_principal.addWidget(self.analise_original, 1)
+        analisada = Cartao("Imagem com detecções")
+        analisada.layout_principal.addWidget(self.analise_anotada, 1)
+        imagens.addWidget(original)
+        imagens.addWidget(analisada)
+        layout.addWidget(imagens, 2)
+        linha_relatorio = QtWidgets.QHBoxLayout()
+        self.btn_relatorio = botao("Abrir relatório PDF", "primaryButton")
+        self.btn_relatorio.setEnabled(False)
+        self.btn_relatorio.clicked.connect(self._abrir_relatorio_analise)
+        self.btn_salvar_relatorio = botao("Salvar PDF")
+        self.btn_salvar_relatorio.setEnabled(False)
+        self.btn_salvar_relatorio.clicked.connect(self._salvar_relatorio_analise)
+        linha_relatorio.addStretch()
+        linha_relatorio.addWidget(self.btn_salvar_relatorio)
+        linha_relatorio.addWidget(self.btn_relatorio)
+        layout.addLayout(linha_relatorio)
+        return pagina
+
+    def _pagina_historico(self) -> QtWidgets.QWidget:
+        pagina = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(pagina)
+        layout.setContentsMargins(0, 0, 0, 0)
+        cartao = Cartao(
+            "Histórico local",
+            "O banco guarda somente metadados e caminhos; GeoTIFFs permanecem fora do SQLite.",
+        )
+        cartao.layout_principal.addWidget(self.historico_tabela, 1)
+        atualizar = botao("Atualizar histórico")
+        atualizar.clicked.connect(self._recarregar_historico)
+        cartao.layout_principal.addWidget(atualizar)
+        layout.addWidget(cartao)
+        return pagina
+
+    def _pagina_sobre(self) -> QtWidgets.QWidget:
+        pagina = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(pagina)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+
+        apresentacao = Cartao(
+            "Sentinel-2 MT Downloader",
+            "Ferramenta para consultar, baixar, organizar e analisar cenas Sentinel-2.",
+        )
+        texto = QtWidgets.QLabel(
+            "O aplicativo consulta o catálogo STAC do INPE/Brazil Data Cube, "
+            "aplica filtros de qualidade, preserva os rasters científicos e "
+            "pode gerar previews, patches georreferenciados e análises locais."
+        )
+        texto.setWordWrap(True)
+        apresentacao.layout_principal.addWidget(texto)
+        layout.addWidget(apresentacao)
+
+        fluxo = Cartao("Fluxo de trabalho", "Use as páginas na ordem que melhor se adapta à sua tarefa.")
+        passos = QtWidgets.QLabel(
+            "1. Defina a área e o período.\n"
+            "2. Escolha coleção, bandas e filtros.\n"
+            "3. Salve a configuração e execute uma operação.\n"
+            "4. Consulte previews, dataset, análises e histórico."
+        )
+        passos.setWordWrap(True)
+        fluxo.layout_principal.addWidget(passos)
+        layout.addWidget(fluxo)
+
+        nota = QtWidgets.QLabel(
+            "Integridade científica: os GeoTIFFs originais e multibanda mantêm "
+            "georreferenciamento, valores e resolução nativa. Previews e PNGs são "
+            "representações para visualização ou modelos RGB."
+        )
+        nota.setWordWrap(True)
+        nota.setObjectName("pageSubtitle")
+        layout.addWidget(nota)
+        layout.addStretch()
+        return pagina
+
+    def _pagina_ajuda(self) -> QtWidgets.QWidget:
+        pagina = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(pagina)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+
+        inicio = Cartao("Primeiros passos", "Siga esta sequência para uma execução comum.")
+        texto_inicio = QtWidgets.QLabel(
+            "• Em Área e período, segure Shift e arraste no mapa para desenhar a região.\n"
+            "• Em Dados e qualidade, marque as bandas e revise o filtro de nuvens.\n"
+            "• Em Visão geral, escolha a operação e clique em Executar operação.\n"
+            "• Acompanhe mensagens e arquivos na Saída da operação."
+        )
+        texto_inicio.setWordWrap(True)
+        inicio.layout_principal.addWidget(texto_inicio)
+        layout.addWidget(inicio)
+
+        problemas = Cartao("Problemas comuns", "Estas verificações resolvem a maioria dos avisos.")
+        texto_problemas = QtWidgets.QLabel(
+            "• Nenhuma cena encontrada: confira datas, área, coleção e URL STAC.\n"
+            "• Download rejeitado: verifique conexão, espaço em disco e o log da operação.\n"
+            "• RGB incompleto: a cena precisa conter B04, B03 e B02.\n"
+            "• Google Drive: confirme o JSON OAuth e autorize a conta de teste do projeto.\n"
+            "• Para suporte, envie a mensagem do log e a configuração sem credenciais."
+        )
+        texto_problemas.setWordWrap(True)
+        problemas.layout_principal.addWidget(texto_problemas)
+        layout.addWidget(problemas)
+
+        seguranca = QtWidgets.QLabel(
+            "Nunca compartilhe tokens, client secrets ou URLs de autorização completas. "
+            "Use a página Configuração para revisar o YAML antes de executar."
+        )
+        seguranca.setWordWrap(True)
+        seguranca.setObjectName("pageSubtitle")
+        layout.addWidget(seguranca)
+        layout.addStretch()
+        return pagina
+
     def _barra_acoes(self) -> QtWidgets.QWidget:
         barra = QtWidgets.QWidget()
         layout = QtWidgets.QHBoxLayout(barra)
@@ -874,6 +1133,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_salvar.clicked.connect(self._salvar_configuracao)
         self.btn_executar.clicked.connect(self._executar)
         self.btn_cancelar.clicked.connect(self._cancelar)
+        self.historico_tabela.doubleClicked.connect(self._abrir_relatorio_historico)
 
     def _navegar(self, indice: int) -> None:
         self.stack.setCurrentIndex(indice)
@@ -882,6 +1142,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if indice == 1:
             QtCore.QTimer.singleShot(0, self.mapa.reativar)
             QtCore.QTimer.singleShot(200, self.mapa.reativar)
+        elif indice == 5:
+            self._recarregar_historico()
 
     def _atualizar_operacao(self) -> None:
         operacao = self.operacao.currentData()
@@ -889,6 +1151,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "catalogar": "Consulta o INPE e atualiza o catálogo CSV sem baixar GeoTIFFs.",
             "baixar": "Filtra nuvens, baixa as bandas aprovadas e gera previews RGB.",
             "dataset": "Reutiliza GeoTIFFs locais e gera patches científicos e RGB PNG.",
+            "analisar": "Baixa e processa cenas, executa o detector agrícola e gera resultados locais.",
             "sincronizar": "Envia as imagens locais ao Google Drive em lotes configuráveis.",
         }
         self.resumo_operacao.setText(mensagens[str(operacao)])
@@ -899,16 +1162,32 @@ class MainWindow(QtWidgets.QMainWindow):
             else "Limite de cenas desta operação; zero processa todas."
         )
 
+    def _colecao_marcada(self, nome: str, marcada: bool) -> None:
+        """Mantém o campo textual sincronizado com a coleção marcada."""
+        if marcada:
+            self.colecao.blockSignals(True)
+            self.colecao.setText(nome)
+            self.colecao.blockSignals(False)
+
+    def _colecao_personalizada_alterada(self, valor: str) -> None:
+        if valor not in self.colecoes_checkboxes:
+            for caixa in self.colecoes_checkboxes.values():
+                caixa.setChecked(False)
+
     def _coletar_dados(self) -> dict[str, Any]:
         bbox = normalizar_bbox(
             [self.oeste.value(), self.sul.value(), self.leste.value(), self.norte.value()]
         )
-        bandas = [banda.strip() for banda in self.bandas.text().split(",") if banda.strip()]
+        bandas = [nome for nome, caixa in self.bandas_checkboxes.items() if caixa.isChecked()]
+        colecao = next(
+            (nome for nome, caixa in self.colecoes_checkboxes.items() if caixa.isChecked()),
+            self.colecao.text().strip(),
+        )
         return {
             "bbox": bbox,
             "nome_regiao": self.nome_regiao.text().strip() or "Região personalizada",
             "uf": self.uf.text().strip().upper() or "MT",
-            "colecao": self.colecao.text().strip() or "S2-16D-2",
+            "colecao": colecao or "S2-16D-2",
             "stac_url": self.stac_url.text().strip() or "https://data.inpe.br/bdc/stac/v1/",
             "inicio": self.inicio.date().toString(QtCore.Qt.DateFormat.ISODate),
             "fim": self.fim.date().toString(QtCore.Qt.DateFormat.ISODate),
@@ -929,6 +1208,16 @@ class MainWindow(QtWidgets.QMainWindow):
             "dataset_rgb_metodo": "fixed",
             "dataset_rgb_minimo": self.dataset_rgb_minimo.value(),
             "dataset_rgb_maximo": self.dataset_rgb_maximo.value(),
+            "modelo_ia": self.modelo_ia.text().strip() or "analise/models/best.pt",
+            "modelo_sha256": self.modelo_sha256.text().strip().lower(),
+            "confianca_minima": self.confianca_minima.value() / 100.0,
+            "iou_maximo": self.iou_maximo.value() / 100.0,
+            "tamanho_inferencia_px": self.tamanho_inferencia_px.value(),
+            "pasta_analises": self.pasta_analises.text().strip() or "data/analises",
+            "historico_analises": self.historico_analises.text().strip()
+            or "data/historico-analises.sqlite3",
+            "gerar_relatorio": self.gerar_relatorio.isChecked(),
+            "max_imagens_analise": self.max_imagens_analise.value(),
             "timeout_segundos": self.timeout_segundos.value(),
             "chunk_mb": self.chunk_mb.value(),
             "max_itens_teste": self.max_itens_teste.value(),
@@ -989,6 +1278,9 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         self.log.clear()
+        self._saida_pendente = ""
+        self._resultado_pendente = None
+        self._operacao_em_execucao = str(self.operacao.currentData())
         programa, argumentos_processo, diretorio = comando_cli_empacotado(argumentos)
         self.log.appendPlainText(
             f"$ {shlex.join([programa, *argumentos_processo])}\n"
@@ -1005,11 +1297,217 @@ class MainWindow(QtWidgets.QMainWindow):
             cursor.insertText(texto)
             self.log.setTextCursor(cursor)
             self.log.ensureCursorVisible()
+            self._saida_pendente += texto
+            while "\n" in self._saida_pendente:
+                linha, self._saida_pendente = self._saida_pendente.split("\n", 1)
+                self._processar_linha_resultado(linha)
 
     def _processo_finalizado(self, codigo: int, _status) -> None:
+        if self._saida_pendente:
+            self._processar_linha_resultado(self._saida_pendente)
+            self._saida_pendente = ""
+        if codigo == 0 and self._resultado_pendente is not None:
+            try:
+                self._carregar_resultado_analise(self._resultado_pendente)
+            except (OSError, TypeError, ValueError, json.JSONDecodeError) as erro:
+                self.log.appendPlainText(f"\n[ERRO] Resultado da análise inválido: {erro}")
+            finally:
+                self._resultado_pendente = None
         mensagem = "Concluído" if codigo == 0 else f"Encerrado com código {codigo}"
         self.log.appendPlainText(f"\n[{mensagem}]")
         self._definir_execucao(False, mensagem)
+
+    def _processar_linha_resultado(self, linha: str) -> None:
+        marcador = "[ANALISE_RESULTADO] "
+        if self._operacao_em_execucao != "analisar" or not linha.startswith(marcador):
+            return
+        caminho = Path(linha[len(marcador):].strip()).expanduser()
+        if caminho.is_absolute() or ".." in caminho.parts or caminho.suffix.lower() != ".json":
+            return
+        self._resultado_pendente = ROOT / caminho
+
+    def _carregar_resultado_analise(self, caminho: Path) -> None:
+        _, raiz_analises = self._raizes_artefatos()
+        caminho = self._resolver_em_raiz(caminho, raiz_analises, {".json"})
+        if caminho.stat().st_size > 10 * 1024 * 1024:
+            raise ValueError("resultado.json excede o limite de 10 MB")
+        dados = json.loads(caminho.read_text(encoding="utf-8"))
+        if not isinstance(dados, dict) or "estatisticas" not in dados:
+            raise ValueError("estrutura JSON inesperada")
+        self._ultimo_resultado = dados
+        estatisticas = dados["estatisticas"]
+        periodo = f"{dados.get('periodo_inicio', '—')} a {dados.get('periodo_fim', '—')}"
+        self.analise_info.setText(
+            f"Região: {dados.get('regiao', '—')}\nPeríodo: {periodo}\n"
+            f"Cenas: {', '.join(dados.get('scene_ids', [])) or '—'}\n"
+            f"Dispositivo de processamento: {dados.get('dispositivo', '—')}\n"
+            f"Detecções: {estatisticas.get('total_deteccoes', 0)}"
+        )
+        por_classe = estatisticas.get("por_classe", {})
+        self.analise_tabela.setRowCount(len(por_classe))
+        for linha, classe in enumerate(sorted(por_classe)):
+            valores = (
+                classe,
+                str(por_classe[classe]),
+                self._percentual_confianca(estatisticas.get("confianca_media_por_classe", {}).get(classe)),
+                self._percentual_confianca(estatisticas.get("confianca_minima_por_classe", {}).get(classe)),
+                self._percentual_confianca(estatisticas.get("confianca_maxima_por_classe", {}).get(classe)),
+            )
+            for coluna, valor in enumerate(valores):
+                self.analise_tabela.setItem(linha, coluna, QtWidgets.QTableWidgetItem(valor))
+        raiz_dataset, raiz_analises = self._raizes_artefatos()
+        self._exibir_imagem_resultado(
+            self.analise_original, dados.get("imagem_original", ""), raiz_dataset
+        )
+        self._exibir_imagem_resultado(
+            self.analise_anotada, dados.get("imagem_analisada", ""), raiz_analises
+        )
+        relatorio = self._resolver_em_raiz_opcional(
+            dados.get("caminho_relatorio", ""), raiz_analises, {".pdf"}
+        )
+        self.btn_relatorio.setEnabled(bool(relatorio and relatorio.is_file()))
+        self.btn_salvar_relatorio.setEnabled(bool(relatorio and relatorio.is_file()))
+        self._navegar(4)
+        self._recarregar_historico()
+
+    @staticmethod
+    def _percentual_confianca(valor: object) -> str:
+        return "—" if valor is None else f"{float(valor) * 100:.1f}%"
+
+    def _raizes_artefatos(self) -> tuple[Path, Path]:
+        config_path = Path(self.output_path.text().strip() or DEFAULT_CONFIG)
+        config = ConfiguracaoProjeto.carregar(config_path, raiz=ROOT)
+        return (
+            config.caminho(config.dataset.pasta).resolve(),
+            config.caminho(config.analise.pasta).resolve(),
+        )
+
+    @staticmethod
+    def _resolver_em_raiz(valor: object, raiz: Path, sufixos: set[str]) -> Path:
+        caminho = Path(str(valor)).expanduser()
+        caminho = caminho if caminho.is_absolute() else ROOT / caminho
+        if caminho.is_symlink():
+            raise ValueError("Links simbólicos não são aceitos para artefatos")
+        resolvido = caminho.resolve()
+        try:
+            resolvido.relative_to(raiz.resolve())
+        except ValueError as exc:
+            raise ValueError("Artefato fora da raiz permitida") from exc
+        if resolvido.is_symlink() or not resolvido.is_file() or resolvido.suffix.lower() not in sufixos:
+            raise ValueError("Artefato ausente ou inválido")
+        return resolvido
+
+    def _resolver_em_raiz_opcional(
+        self, valor: object, raiz: Path, sufixos: set[str]
+    ) -> Path | None:
+        if not valor:
+            return None
+        try:
+            return self._resolver_em_raiz(valor, raiz, sufixos)
+        except ValueError:
+            return None
+
+    def _exibir_imagem_resultado(
+        self, rotulo: QtWidgets.QLabel, valor: object, raiz: Path
+    ) -> None:
+        caminho = self._resolver_em_raiz_opcional(
+            valor, raiz, {".png", ".jpg", ".jpeg"}
+        )
+        imagem = QtGui.QPixmap(str(caminho)) if caminho else QtGui.QPixmap()
+        if imagem.isNull():
+            rotulo.setText("Imagem indisponível")
+            rotulo.setPixmap(QtGui.QPixmap())
+            return
+        rotulo.setPixmap(
+            imagem.scaled(
+                560, 360, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                QtCore.Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
+    def _abrir_relatorio_analise(self) -> None:
+        if not self._ultimo_resultado:
+            return
+        _, raiz_analises = self._raizes_artefatos()
+        caminho = self._resolver_em_raiz_opcional(
+            self._ultimo_resultado.get("caminho_relatorio", ""), raiz_analises, {".pdf"}
+        )
+        if caminho and caminho.is_file():
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(caminho)))
+
+    def _salvar_relatorio_analise(self) -> None:
+        """Copia o PDF da análise para um local escolhido pelo usuário."""
+        if not self._ultimo_resultado:
+            return
+        try:
+            _, raiz_analises = self._raizes_artefatos()
+            origem = self._resolver_em_raiz_opcional(
+                self._ultimo_resultado.get("caminho_relatorio", ""), raiz_analises, {".pdf"}
+            )
+        except (OSError, TypeError, ValueError):
+            origem = None
+        if not origem or not origem.is_file():
+            self.statusBar().showMessage("O relatório PDF da análise não está disponível.", 5000)
+            return
+
+        identificador = str(self._ultimo_resultado.get("analysis_id", "analise"))
+        destino, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Salvar relatório PDF",
+            str(Path.home() / f"relatorio-{identificador}.pdf"),
+            "Documento PDF (*.pdf)",
+        )
+        if not destino:
+            return
+        destino_path = Path(destino).expanduser()
+        if destino_path.suffix.lower() != ".pdf":
+            destino_path = destino_path.with_suffix(".pdf")
+        try:
+            destino_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(origem, destino_path)
+            self.statusBar().showMessage(f"Relatório salvo em: {destino_path}", 6000)
+        except OSError as erro:
+            self.statusBar().showMessage(f"Não foi possível salvar o relatório: {erro}", 6000)
+
+    def _recarregar_historico(self) -> None:
+        self.historico_tabela.setRowCount(0)
+        try:
+            config_path = Path(self.output_path.text().strip() or DEFAULT_CONFIG)
+            if not config_path.is_file():
+                return
+            config = ConfiguracaoProjeto.carregar(config_path, raiz=ROOT)
+            banco = config.caminho(config.analise.historico)
+            if not banco.is_file():
+                return
+            registros = RepositorioHistoricoAnalises(banco, ROOT).listar(limite=200)
+        except (OSError, TypeError, ValueError):
+            return
+        self.historico_tabela.setRowCount(len(registros))
+        for linha, registro in enumerate(registros):
+            resumo = registro.resumo if isinstance(registro.resumo, dict) else {}
+            valores = (
+                registro.criado_em,
+                registro.regiao,
+                f"{registro.periodo_inicio} a {registro.periodo_fim}",
+                str(resumo.get("total_deteccoes", 0)),
+                registro.report_path or "—",
+            )
+            for coluna, valor in enumerate(valores):
+                item = QtWidgets.QTableWidgetItem(valor)
+                if coluna == 4:
+                    item.setData(QtCore.Qt.ItemDataRole.UserRole, registro.report_path)
+                self.historico_tabela.setItem(linha, coluna, item)
+
+    def _abrir_relatorio_historico(self, indice: QtCore.QModelIndex) -> None:
+        item = self.historico_tabela.item(indice.row(), 4)
+        _, raiz_analises = self._raizes_artefatos()
+        caminho = self._resolver_em_raiz_opcional(
+            item.data(QtCore.Qt.ItemDataRole.UserRole) if item else "",
+            raiz_analises,
+            {".pdf"},
+        )
+        if caminho and caminho.is_file():
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(caminho)))
 
     def _erro_processo(self, erro) -> None:
         if erro == QtCore.QProcess.ProcessError.FailedToStart:
@@ -1117,9 +1615,18 @@ class MainWindow(QtWidgets.QMainWindow):
     def _aplicar_dados(self, dados: dict[str, Any]) -> None:
         self.nome_regiao.setText(str(dados.get("nome_regiao", self.nome_regiao.text())))
         self.uf.setText(str(dados.get("uf", self.uf.text())))
-        self.colecao.setText(str(dados.get("colecao", self.colecao.text())))
+        colecao = str(dados.get("colecao", self.colecao.text()))
+        if colecao in self.colecoes_checkboxes:
+            self.colecoes_checkboxes[colecao].setChecked(True)
+        else:
+            for caixa in self.colecoes_checkboxes.values():
+                caixa.setChecked(False)
+            self.colecao.setText(colecao)
         self.stac_url.setText(str(dados.get("stac_url", self.stac_url.text())))
-        self.bandas.setText(", ".join(dados.get("bandas", [])) or self.bandas.text())
+        bandas = {str(banda).upper() for banda in dados.get("bandas", [])}
+        if bandas:
+            for nome, caixa in self.bandas_checkboxes.items():
+                caixa.setChecked(nome in bandas)
         for campo, chave in ((self.inicio, "inicio"), (self.fim, "fim")):
             data = QtCore.QDate.fromString(str(dados.get(chave, "")), QtCore.Qt.DateFormat.ISODate)
             if data.isValid():

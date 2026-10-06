@@ -14,7 +14,7 @@ O pipeline mantém quatro tipos de produto com finalidades distintas:
 Os rasters de origem nunca são sobrescritos, reduzidos ou convertidos para
 `uint8`. A conversão para 0–255 ocorre somente no PNG/JPEG. O pipeline não gera
 um PNG RGB da cena inteira por padrão; o RGB específico do dataset é o
-`rgb.png` de cada patch.
+o PNG RGB identificado por UUID em cada patch.
 
 No produto padrão, os rasters científicos são GeoTIFF; coleções que forneçam
 JP2 mantêm essa extensão. O PNG ainda é uma representação `uint8` e nunca
@@ -213,7 +213,7 @@ data/
 │   └── preview_rgb.jpg            # se preview.gerar_rgb=true e RGB disponível
 └── dataset/YYYY-MM-DD/SCENE_ID/PATCH_ID/
     ├── multiband.tif              # se habilitado
-    ├── rgb.png                    # se habilitado e RGB disponível
+    ├── <uuid>.png                 # se habilitado e RGB disponível
     └── metadata.json              # patch aprovado, se habilitado
 
 catalogo/
@@ -284,6 +284,22 @@ essas ausências são registradas sem abortar os demais assets.
 
 A sincronização Google Drive atual percorre apenas `download.pasta`; o dataset,
 seus PNG/JSON e `patches.csv` não são enviados automaticamente.
+
+## Relação com a análise agrícola
+
+`--analisar` primeiro executa a coleta com geração de dataset e depois seleciona
+no `patches.csv` somente registros aprovados, dentro do período, que tenham
+`rgb_png` local. O detector recebe o PNG identificado por UUID, com B04/B03/B02 em 8 bits; o
+`multiband.tif` continua sendo o patch científico e não é alterado. Para cada
+entrada, a análise cria um PNG de overlay separado.
+
+As estatísticas agregam caixas, classes, confianças, presença de detecção por
+tile, nuvens disponíveis e hashes de modelo/entradas. Elas não calculam área.
+A bbox da configuração delimita a consulta, mas caixas em pixels não podem ser
+convertidas em hectares sem escala, resolução espacial e geometria
+georreferenciada validadas para esse fim. Consulte [modelo-ia.md](modelo-ia.md)
+para o contrato do detector e [arquitetura-aplicacao.md](arquitetura-aplicacao.md)
+para o fluxo da aplicação.
 
 ## Limitações
 

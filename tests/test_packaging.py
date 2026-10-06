@@ -1,4 +1,7 @@
 import ast
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from unittest import TestCase
 
@@ -25,6 +28,28 @@ class TestPackaging(TestCase):
         self.assertIn("QT_QPA_PLATFORM: offscreen", workflow)
         self.assertIn("--gui --smoke-test", workflow)
 
+    def test_workflow_dispatch_nao_interpola_versao_em_script(self) -> None:
+        workflow = yaml.safe_load((ROOT / ".github/workflows/packages.yml").read_text(encoding="utf-8"))
+        etapas = workflow["jobs"]["packages"]["steps"]
+        etapa_versao = next(etapa for etapa in etapas if etapa.get("name") == "Definir versão")
+        scripts = "\n".join(etapa.get("run", "") for etapa in etapas)
+
+        self.assertEqual(etapa_versao["env"]["DISPATCH_VERSION"], "${{ inputs.version }}")
+        self.assertNotIn("${{ inputs.", scripts)
+        self.assertIn('VERSION="$DISPATCH_VERSION"', etapa_versao["run"])
+
+    def test_workflow_valida_wrapper_distribuido(self) -> None:
+        workflow = (ROOT / ".github/workflows/packages.yml").read_text(encoding="utf-8")
+        self.assertIn("./release/sentinel2-mt-wrapper.sh --version", workflow)
+        self.assertIn("./release/sentinel2-mt-wrapper.sh --help", workflow)
+        self.assertIn("stat -c '%s'", workflow)
+        self.assertIn("compression-level: 0", workflow)
+        self.assertIn("2147483648", workflow)
+        self.assertIn("Ignorando asset acima do limite do GitHub Releases", workflow)
+        self.assertIn("Observação de empacotamento", workflow)
+        self.assertIn("ficaram apenas como artifact do workflow", workflow)
+        self.assertIn("printf -- '- %s (%s bytes)\\n'", workflow)
+
     def test_atalho_desktop_abre_gui_sem_terminal(self) -> None:
         desktop = (ROOT / "packaging/sentinel2-mt.desktop").read_text(encoding="utf-8")
         self.assertIn("Exec=sentinel2-mt --gui", desktop)
@@ -44,6 +69,32 @@ class TestPackaging(TestCase):
         self.assertIn("$pkgdir/usr/lib/sentinel2-mt/sentinel2-mt", arch)
         self.assertIn("sentinel2-mt-wrapper.sh", rpm)
         self.assertIn("sentinel2-mt-wrapper.sh", arch)
+
+    def test_wrapper_executa_binario_adjacente_e_repassa_argumentos(self) -> None:
+        with tempfile.TemporaryDirectory() as temporario:
+            pasta = Path(temporario)
+            wrapper = pasta / "sentinel2-mt-wrapper.sh"
+            binario = pasta / "sentinel2-mt-linux-x86_64"
+            shutil.copy2(ROOT / "packaging/sentinel2-mt-wrapper.sh", wrapper)
+            wrapper.chmod(0o755)
+            binario.write_text('#!/bin/sh\nprintf "<%s>\\n" "$@"\n', encoding="utf-8")
+            binario.chmod(0o755)
+
+            resultado = subprocess.run(
+                [str(wrapper), "--area", "Cuiabá e Várzea Grande", "$(nao-executar)"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(
+            resultado.stdout.splitlines(),
+            ["<--area>", "<Cuiabá e Várzea Grande>", "<$(nao-executar)>"],
+        )
+
+    def test_wrapper_rejeita_recursao_com_binario_adjacente(self) -> None:
+        wrapper = (ROOT / "packaging/sentinel2-mt-wrapper.sh").read_text(encoding="utf-8")
+        self.assertIn('! [ "$adjacent_binary" -ef "$0" ]', wrapper)
 
     def test_versao_do_workflow_acompanha_codigo(self) -> None:
         workflow = (ROOT / ".github/workflows/packages.yml").read_text(encoding="utf-8")
@@ -87,3 +138,25 @@ class TestPackaging(TestCase):
 
         self.assertNotIn("PySide6", exclusoes)
         self.assertIn("PyQt6", exclusoes)
+
+    def test_build_arch_respeita_extensao_configurada_pelo_makepkg(self) -> None:
+        conteudo = (ROOT / "packaging/build_arch_package.sh").read_text(encoding="utf-8")
+        self.assertIn("makepkg --packagelist", conteudo)
+        self.assertNotIn('*.pkg.tar.zst', conteudo)
+
+    def test_runtime_ia_e_modelo_entram_no_bundle(self) -> None:
+        requisitos = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+        spec = (ROOT / "packaging/sentinel2-mt.spec").read_text(encoding="utf-8")
+        self.assertIn("ultralytics", requisitos)
+        self.assertIn("matplotlib", requisitos)
+        self.assertIn('"torch"', spec)
+        self.assertIn('"ultralytics"', spec)
+        self.assertIn("sentinel2_mt/analise/models", spec)
+
+    def test_configs_de_desenvolvimento_e_pacote_expoem_analise(self) -> None:
+        desenvolvimento = yaml.safe_load((ROOT / "config/config.yaml").read_text(encoding="utf-8"))
+        pacote = yaml.safe_load((ROOT / "packaging/config.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(set(desenvolvimento["analise"]), set(pacote["analise"]))
+        self.assertEqual(
+            desenvolvimento["analise"]["modelo"], pacote["analise"]["modelo"]
+        )
