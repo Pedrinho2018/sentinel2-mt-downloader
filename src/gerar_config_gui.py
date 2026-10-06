@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import sys
 from pathlib import Path
@@ -19,16 +20,34 @@ from sentinel2_mt.gui_support import (
 from sentinel2_mt.gui_theme import CORES, folha_estilos
 
 
-ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONFIG = ROOT / "config" / "config.yaml"
-LOCAL_DB = ROOT / "config" / "configuracoes_local.db"
-SCRIPT_CLI = ROOT / "src" / "baixar_inpe_mt.py"
+EMPACOTADO = bool(getattr(sys, "frozen", False))
+if EMPACOTADO:
+    ROOT = Path.home()
+    XDG_CONFIG_HOME = Path(
+        os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
+    ).expanduser()
+    CONFIG_USUARIO = XDG_CONFIG_HOME / "sentinel2-mt"
+    DEFAULT_CONFIG = CONFIG_USUARIO / "config.yaml"
+    LOCAL_DB = CONFIG_USUARIO / "configuracoes_local.db"
+    SCRIPT_CLI = Path(sys.executable)
+else:
+    ROOT = Path(__file__).resolve().parents[1]
+    DEFAULT_CONFIG = ROOT / "config" / "config.yaml"
+    LOCAL_DB = ROOT / "config" / "configuracoes_local.db"
+    SCRIPT_CLI = ROOT / "src" / "baixar_inpe_mt.py"
 
 # Compatibilidade com integrações que importavam esta função do módulo da GUI.
 bbox_para_yaml = normalizar_bbox
 
 
 ESTILO = folha_estilos()
+
+
+def comando_cli_empacotado(argumentos: list[str]) -> tuple[str, list[str], Path]:
+    """Monta a operação da GUI para código-fonte ou executável congelado."""
+    if EMPACOTADO:
+        return sys.executable, ["--cli", *argumentos], Path.home()
+    return sys.executable, ["-u", str(SCRIPT_CLI), *argumentos], ROOT
 
 
 def botao(texto: str, tipo: str = "secondaryButton") -> QtWidgets.QPushButton:
@@ -970,10 +989,13 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         self.log.clear()
-        self.log.appendPlainText(f"$ {shlex.join([str(SCRIPT_CLI), *argumentos])}\n")
+        programa, argumentos_processo, diretorio = comando_cli_empacotado(argumentos)
+        self.log.appendPlainText(
+            f"$ {shlex.join([programa, *argumentos_processo])}\n"
+        )
         self._definir_execucao(True, "Executando")
-        self.processo.setWorkingDirectory(str(ROOT))
-        self.processo.start(sys.executable, ["-u", str(SCRIPT_CLI), *argumentos])
+        self.processo.setWorkingDirectory(str(diretorio))
+        self.processo.start(programa, argumentos_processo)
 
     def _ler_saida(self) -> None:
         texto = bytes(self.processo.readAllStandardOutput()).decode("utf-8", errors="replace")
@@ -1169,13 +1191,18 @@ class MainWindow(QtWidgets.QMainWindow):
         evento.accept()
 
 
-def main() -> int:
-    app = QtWidgets.QApplication(sys.argv)
+def main(argv: list[str] | None = None) -> int:
+    argumentos = list(sys.argv[1:] if argv is None else argv)
+    smoke_test = "--smoke-test" in argumentos
+    argumentos_qt = [sys.argv[0], *(arg for arg in argumentos if arg != "--smoke-test")]
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(argumentos_qt)
     app.setApplicationName("Sentinel-2 MT")
     app.setOrganizationName("Sentinel2 MT")
     configurar_aplicacao(app)
     janela = MainWindow()
     janela.show()
+    if smoke_test:
+        QtCore.QTimer.singleShot(1200, app.quit)
     return app.exec()
 
 

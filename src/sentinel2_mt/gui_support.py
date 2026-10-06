@@ -92,10 +92,18 @@ class LocalConfigStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._inicializar()
 
-    def _conectar(self) -> sqlite3.Connection:
+    @contextmanager
+    def _conectar(self) -> Iterator[sqlite3.Connection]:
         conexao = sqlite3.connect(self.db_path)
         conexao.row_factory = sqlite3.Row
-        return conexao
+        try:
+            yield conexao
+            conexao.commit()
+        except Exception:
+            conexao.rollback()
+            raise
+        finally:
+            conexao.close()
 
     def _inicializar(self) -> None:
         with closing(self._conectar()) as conexao, conexao:
