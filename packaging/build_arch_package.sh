@@ -16,6 +16,7 @@ mkdir -p "$WORK"
 install -m755 "$OUT/sentinel2-mt-linux-x86_64" "$WORK/sentinel2-mt"
 install -m644 "$OUT/sentinel2-mt-config.yaml" "$WORK/config.yaml"
 install -m644 "$OUT/sentinel2-mt.desktop" "$WORK/sentinel2-mt.desktop"
+install -m755 "$OUT/sentinel2-mt-wrapper.sh" "$WORK/sentinel2-mt-wrapper.sh"
 sed "s/@VERSION@/$VERSION/g" "$ROOT/packaging/arch/PKGBUILD.ci" >"$WORK/PKGBUILD"
 
 useradd --create-home builder

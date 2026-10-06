@@ -9,7 +9,7 @@ on:
       version:
         description: "Versão X.Y.Z para gerar artefatos sem publicar Release"
         required: true
-        default: "1.1.1"
+        default: "1.1.2"
 
 permissions:
   contents: write

@@ -8,11 +8,12 @@ license=('custom')
 depends=('glibc' 'libgl' 'libxkbcommon-x11' 'nss' 'alsa-lib' 'dbus' 'fontconfig' 'xcb-util-cursor')
 provides=('sentinel2-mt-downloader')
 conflicts=('sentinel2-mt-downloader')
-source=('sentinel2-mt' 'config.yaml' 'sentinel2-mt.desktop')
-sha256sums=('SKIP' 'SKIP' 'SKIP')
+source=('sentinel2-mt' 'config.yaml' 'sentinel2-mt.desktop' 'sentinel2-mt-wrapper.sh')
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 package() {
-  install -Dm755 sentinel2-mt "$pkgdir/usr/bin/sentinel2-mt"
+  install -Dm755 sentinel2-mt "$pkgdir/usr/lib/sentinel2-mt/sentinel2-mt"
+  install -Dm755 sentinel2-mt-wrapper.sh "$pkgdir/usr/bin/sentinel2-mt"
   install -Dm644 config.yaml "$pkgdir/etc/sentinel2-mt/config.yaml"
   install -Dm644 sentinel2-mt.desktop "$pkgdir/usr/share/applications/sentinel2-mt.desktop"
 }

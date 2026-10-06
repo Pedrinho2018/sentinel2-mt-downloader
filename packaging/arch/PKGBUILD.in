@@ -12,11 +12,13 @@ source=(
   "sentinel2-mt-${pkgver}::https://github.com/coldrenatinho/sentinel2-mt-downloader/releases/download/v${pkgver}/sentinel2-mt-linux-x86_64"
   "config-${pkgver}.yaml::https://github.com/coldrenatinho/sentinel2-mt-downloader/releases/download/v${pkgver}/sentinel2-mt-config.yaml"
   "sentinel2-mt.desktop::https://github.com/coldrenatinho/sentinel2-mt-downloader/releases/download/v${pkgver}/sentinel2-mt.desktop"
+  "sentinel2-mt-wrapper.sh::https://github.com/coldrenatinho/sentinel2-mt-downloader/releases/download/v${pkgver}/sentinel2-mt-wrapper.sh"
 )
-sha256sums=('@BINARY_SHA256@' '@CONFIG_SHA256@' '@DESKTOP_SHA256@')
+sha256sums=('@BINARY_SHA256@' '@CONFIG_SHA256@' '@DESKTOP_SHA256@' '@WRAPPER_SHA256@')
 
 package() {
-  install -Dm755 "sentinel2-mt-${pkgver}" "$pkgdir/usr/bin/sentinel2-mt"
+  install -Dm755 "sentinel2-mt-${pkgver}" "$pkgdir/usr/lib/sentinel2-mt/sentinel2-mt"
+  install -Dm755 sentinel2-mt-wrapper.sh "$pkgdir/usr/bin/sentinel2-mt"
   install -Dm644 "config-${pkgver}.yaml" "$pkgdir/etc/sentinel2-mt/config.yaml"
   install -Dm644 sentinel2-mt.desktop "$pkgdir/usr/share/applications/sentinel2-mt.desktop"
 }
