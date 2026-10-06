@@ -95,9 +95,10 @@ class TestGerarConfigGui(unittest.TestCase):
             self.assertNotIn("token_json", item["payload"])
 
     def test_monta_argumentos_para_download(self):
+        config = pathlib.Path("config/config.yaml")
         argumentos = montar_argumentos_operacao(
             "baixar",
-            "config/config.yaml",
+            config,
             inicio="2025-09-01",
             fim="2026-04-30",
             max_itens=8,
@@ -107,7 +108,7 @@ class TestGerarConfigGui(unittest.TestCase):
             argumentos,
             [
                 "--config",
-                "config/config.yaml",
+                str(config),
                 "--baixar",
                 "--inicio",
                 "2025-09-01",
@@ -119,16 +120,41 @@ class TestGerarConfigGui(unittest.TestCase):
         )
 
     def test_monta_argumentos_para_sincronizacao(self):
+        config = pathlib.Path("config/config.yaml")
         argumentos = montar_argumentos_operacao(
             "sincronizar",
-            "config/config.yaml",
+            config,
             oauth_json="${GOOGLE_OAUTH_JSON:-}",
             tamanho_lote=25,
         )
 
         self.assertEqual(
             argumentos,
-            ["--config", "config/config.yaml", "--sincronizar", "--lote", "25"],
+            ["--config", str(config), "--sincronizar", "--lote", "25"],
+        )
+
+    def test_monta_argumentos_para_dataset_local(self):
+        argumentos = montar_argumentos_operacao(
+            "dataset",
+            "config/config.yaml",
+            max_itens=0,
+            patch_size=256,
+            patch_stride=128,
+        )
+
+        self.assertEqual(
+            argumentos,
+            [
+                "--config",
+                "config/config.yaml",
+                "--gerar-dataset",
+                "--max-itens",
+                "0",
+                "--patch-size",
+                "256",
+                "--patch-stride",
+                "128",
+            ],
         )
 
     def test_monta_argumentos_para_dataset_local(self):
