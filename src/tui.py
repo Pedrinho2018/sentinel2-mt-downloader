@@ -154,7 +154,7 @@ class SentinelTUI(App):
         if not config.is_file():
             raise ValueError(f"Configuração não encontrada: {config}")
 
-        comando = [sys.executable, "--config", str(config)] if EMPACOTADO else [sys.executable, "-u", str(SCRIPT), "--config", str(config)]
+        comando = [sys.executable, "--cli", "--config", str(config)] if EMPACOTADO else [sys.executable, "-u", str(SCRIPT), "--config", str(config)]
         if operacao == "baixar":
             comando.append("--baixar")
         elif operacao == "sincronizar":

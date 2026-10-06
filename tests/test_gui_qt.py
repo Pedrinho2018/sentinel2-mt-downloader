@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase, skipUnless
+from unittest.mock import patch
 
 import yaml
 
@@ -153,6 +154,22 @@ class TestGuiQt(TestCase):
         self.assertIn("[Concluído]", texto)
         self.assertTrue(self.janela.btn_executar.isEnabled())
         self.assertFalse(self.janela.btn_cancelar.isEnabled())
+
+    def test_binario_empacotado_reentra_em_modo_cli(self) -> None:
+        with (
+            patch.object(gui, "EMPACOTADO", True),
+            patch.object(gui.sys, "executable", "/usr/bin/sentinel2-mt"),
+        ):
+            programa, argumentos, pasta = gui.comando_cli_empacotado(
+                ["--config", "/tmp/config.yaml", "--baixar"]
+            )
+
+        self.assertEqual(programa, "/usr/bin/sentinel2-mt")
+        self.assertEqual(
+            argumentos,
+            ["--cli", "--config", "/tmp/config.yaml", "--baixar"],
+        )
+        self.assertEqual(pasta, Path.home())
 
     def test_execucao_mantem_selecao_legivel_para_proxima_operacao(self) -> None:
         indice = self.janela.operacao.findData("baixar")

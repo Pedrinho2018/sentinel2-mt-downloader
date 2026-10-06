@@ -9,7 +9,7 @@ on:
       version:
         description: "Versão X.Y.Z para gerar artefatos sem publicar Release"
         required: true
-        default: "1.0.0"
+        default: "1.1.0"
 
 permissions:
   contents: write
@@ -31,6 +31,7 @@ jobs:
           cache: pip
           cache-dependency-path: |
             requirements.txt
+            requirements-gui.txt
             requirements-build.txt
 
       - name: Definir versão
@@ -51,7 +52,7 @@ jobs:
       - name: Instalar dependências de build
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt -r requirements-build.txt
+          python -m pip install -r requirements-gui.txt -r requirements-build.txt
           sudo apt-get update
           sudo apt-get install --yes rpm
 
@@ -69,15 +70,22 @@ jobs:
           PY
 
       - name: Executar testes
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: python -m unittest discover -v
 
       - name: Gerar executável autocontido
         run: python -m PyInstaller --noconfirm --clean packaging/sentinel2-mt.spec
 
       - name: Validar executável
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QTWEBENGINE_DISABLE_SANDBOX: "1"
+          QTWEBENGINE_CHROMIUM_FLAGS: --disable-gpu
         run: |
           ./dist/sentinel2-mt --version
           ./dist/sentinel2-mt --help
+          timeout 30s ./dist/sentinel2-mt --gui --smoke-test
 
       - name: Gerar DEB, RPM e PKGBUILD
         run: packaging/build_linux_packages.sh "${{ steps.version.outputs.version }}"

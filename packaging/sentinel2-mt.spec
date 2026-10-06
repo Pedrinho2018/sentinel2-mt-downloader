@@ -20,7 +20,16 @@ analise = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    excludes=["PySide6", "streamlit", "folium", "streamlit_folium"],
+    # PySide6 e QtWebEngine fazem parte da distribuição principal. Os hooks
+    # nativos do PyInstaller coletam os plugins, recursos e subprocessos Qt.
+    excludes=[
+        "PyQt5",
+        "PyQt6",
+        "PySide2",
+        "streamlit",
+        "folium",
+        "streamlit_folium",
+    ],
     noarchive=False,
 )
 pyz = PYZ(analise.pure)

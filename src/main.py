@@ -1,18 +1,6 @@
-from __future__ import annotations
+"""Ponto de entrada do executável distribuído."""
 
-import sys
-
-
-def main() -> int:
-    if len(sys.argv) > 1:
-        from sentinel2_mt.cli import main as cli_main
-
-        return cli_main(sys.argv[1:])
-
-    from tui import SentinelTUI
-
-    SentinelTUI().run()
-    return 0
+from sentinel2_mt.launcher import main
 
 
 if __name__ == "__main__":
