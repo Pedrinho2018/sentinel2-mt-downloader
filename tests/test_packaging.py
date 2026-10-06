@@ -21,6 +21,7 @@ class TestPackaging(TestCase):
     def test_workflow_instala_e_valida_gui(self) -> None:
         workflow = (ROOT / ".github/workflows/packages.yml").read_text(encoding="utf-8")
         self.assertIn("-r requirements-gui.txt", workflow)
+        self.assertIn("libegl1", workflow)
         self.assertIn("QT_QPA_PLATFORM: offscreen", workflow)
         self.assertIn("--gui --smoke-test", workflow)
 
