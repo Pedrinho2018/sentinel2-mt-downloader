@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
-from contextlib import closing
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 
 def normalizar_bbox(bbox: list[float]) -> list[float]:
@@ -108,7 +108,7 @@ class LocalConfigStore:
             conexao.close()
 
     def _inicializar(self) -> None:
-        with closing(self._conectar()) as conexao, conexao:
+        with self._conectar() as conexao:
             conexao.execute(
                 """
                 CREATE TABLE IF NOT EXISTS configuracoes (
@@ -132,7 +132,7 @@ class LocalConfigStore:
         payload.pop("oauth_json", None)
         payload.pop("token_json", None)
 
-        with closing(self._conectar()) as conexao, conexao:
+        with self._conectar() as conexao:
             cursor = conexao.execute(
                 """
                 INSERT INTO configuracoes (nome_regiao, uf, bbox, colecao, payload)
@@ -149,7 +149,7 @@ class LocalConfigStore:
             return int(cursor.lastrowid)
 
     def listar(self) -> list[dict[str, Any]]:
-        with closing(self._conectar()) as conexao:
+        with self._conectar() as conexao:
             linhas = conexao.execute(
                 """
                 SELECT id, nome_regiao, uf, bbox, colecao, payload, created_at
@@ -167,7 +167,7 @@ class LocalConfigStore:
         return dict(sorted(agrupado.items()))
 
     def carregar(self, item_id: int) -> dict[str, Any] | None:
-        with closing(self._conectar()) as conexao:
+        with self._conectar() as conexao:
             linha = conexao.execute(
                 """
                 SELECT id, nome_regiao, uf, bbox, colecao, payload, created_at
@@ -179,7 +179,7 @@ class LocalConfigStore:
         return dict(linha) if linha else None
 
     def excluir(self, item_id: int) -> None:
-        with closing(self._conectar()) as conexao, conexao:
+        with self._conectar() as conexao:
             conexao.execute("DELETE FROM configuracoes WHERE id = ?", (item_id,))
 
     def listar_presets_por_uf(self) -> dict[str, list[dict[str, Any]]]:
@@ -196,5 +196,5 @@ class LocalConfigStore:
         return self.carregar(item_id)
 
     def limpar(self) -> None:
-        with closing(self._conectar()) as conexao, conexao:
+        with self._conectar() as conexao:
             conexao.execute("DELETE FROM configuracoes")
