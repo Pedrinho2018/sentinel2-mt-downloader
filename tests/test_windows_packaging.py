@@ -17,6 +17,8 @@ class TestWindowsPackaging(TestCase):
         self.assertIn('BACKEND_EXE = ROOT / "Sentinel2-MT-Core.exe"', conteudo)
         self.assertIn('ambiente.insert("PYTHONUNBUFFERED", "1")', conteudo)
         self.assertIn("self.processo.start(str(BACKEND_EXE), argumentos)", conteudo)
+        self.assertIn("patch_size=int(self.patch_tamanho_px.currentData())", conteudo)
+        self.assertIn("patch_stride=self.patch_stride_px.value()", conteudo)
         self.assertNotEqual("Sentinel2-MT.exe".casefold(), "Sentinel2-MT-Core.exe".casefold())
 
     def test_spec_windows_gera_aplicacao_sem_console(self) -> None:
