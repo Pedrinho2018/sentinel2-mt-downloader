@@ -86,6 +86,9 @@ class TestServicoAnaliseAgricola(TestCase):
             config_path.parent.mkdir()
             config_path.write_text(CONFIG, encoding="utf-8")
             config = ConfiguracaoProjeto.carregar(config_path, raiz=raiz)
+            catalogo = raiz / "catalogo" / "patches.csv"
+            catalogo.parent.mkdir()
+            catalogo.write_text("patch_id,status\n", encoding="utf-8")
             mensagens: list[str] = []
             servico = ServicoAnaliseAgricola(
                 config,
