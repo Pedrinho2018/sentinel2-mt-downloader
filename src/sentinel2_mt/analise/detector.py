@@ -42,7 +42,7 @@ def _raizes_padrao() -> tuple[Path, ...]:
 
 def _parece_url(valor: str) -> bool:
     unidade, _ = ntpath.splitdrive(valor)
-    if unidade:
+    if len(unidade) == 2 and unidade[1] == ":":
         return False
     analisado = urlparse(valor)
     return bool(analisado.scheme or analisado.netloc) or valor.startswith("//")
