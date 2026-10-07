@@ -12,11 +12,18 @@ class TestWindowsPackaging(TestCase):
         self.assertTrue((ROOT / "src/gui_windows.py").is_file())
         self.assertTrue((ROOT / "docs/windows.md").is_file())
 
+    def test_core_windows_usa_raiz_do_pacote_portatil(self) -> None:
+        conteudo = (ROOT / "src/sentinel2_mt/cli.py").read_text(encoding="utf-8")
+        self.assertIn('if EMPACOTADO and os.name == "nt":', conteudo)
+        self.assertIn('ROOT = Path(sys.executable).resolve().parent', conteudo)
+
     def test_gui_windows_usa_backend_executavel_distinto(self) -> None:
         conteudo = (ROOT / "src/gui_windows.py").read_text(encoding="utf-8")
         self.assertIn('BACKEND_EXE = ROOT / "Sentinel2-MT-Core.exe"', conteudo)
         self.assertIn('ambiente.insert("PYTHONUNBUFFERED", "1")', conteudo)
         self.assertIn("self.processo.start(str(BACKEND_EXE), argumentos)", conteudo)
+        self.assertIn("patch_size=int(self.patch_tamanho_px.currentData())", conteudo)
+        self.assertIn("patch_stride=self.patch_stride_px.value()", conteudo)
         self.assertNotEqual("Sentinel2-MT.exe".casefold(), "Sentinel2-MT-Core.exe".casefold())
 
     def test_spec_windows_gera_aplicacao_sem_console(self) -> None:

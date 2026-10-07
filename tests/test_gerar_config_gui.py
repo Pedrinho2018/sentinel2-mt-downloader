@@ -146,31 +146,7 @@ class TestGerarConfigGui(unittest.TestCase):
             argumentos,
             [
                 "--config",
-                "config/config.yaml",
-                "--gerar-dataset",
-                "--max-itens",
-                "0",
-                "--patch-size",
-                "256",
-                "--patch-stride",
-                "128",
-            ],
-        )
-
-    def test_monta_argumentos_para_dataset_local(self):
-        argumentos = montar_argumentos_operacao(
-            "dataset",
-            "config/config.yaml",
-            max_itens=0,
-            patch_size=256,
-            patch_stride=128,
-        )
-
-        self.assertEqual(
-            argumentos,
-            [
-                "--config",
-                "config/config.yaml",
+                str(pathlib.Path("config/config.yaml")),
                 "--gerar-dataset",
                 "--max-itens",
                 "0",
@@ -196,7 +172,7 @@ class TestGerarConfigGui(unittest.TestCase):
             argumentos,
             [
                 "--config",
-                "config/config.yaml",
+                str(pathlib.Path("config/config.yaml")),
                 "--analisar",
                 "--inicio",
                 "2026-01-01",

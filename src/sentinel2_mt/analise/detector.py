@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping, Sequence
 import hashlib
 import hmac
+import ntpath
 import os
 from pathlib import Path
 import re
@@ -40,6 +41,9 @@ def _raizes_padrao() -> tuple[Path, ...]:
 
 
 def _parece_url(valor: str) -> bool:
+    unidade, _ = ntpath.splitdrive(valor)
+    if len(unidade) == 2 and unidade[1] == ":":
+        return False
     analisado = urlparse(valor)
     return bool(analisado.scheme or analisado.netloc) or valor.startswith("//")
 
@@ -75,15 +79,10 @@ def resolver_caminho_modelo(
 
     candidatos = (informado,) if informado.is_absolute() else tuple(raiz / informado for raiz in raizes)
     for candidato in candidatos:
-        raiz_candidata = next(
-            (raiz for raiz in raizes if _esta_contido(candidato.absolute(), raiz)), None
-        )
-        if raiz_candidata is None:
-            continue
-        relativo = candidato.absolute().relative_to(raiz_candidata)
-        atual = raiz_candidata
+        absoluto = candidato.absolute()
+        atual = Path(absoluto.anchor)
         tem_symlink = False
-        for parte in relativo.parts:
+        for parte in absoluto.parts[1:]:
             atual = atual / parte
             if atual.is_symlink():
                 tem_symlink = True
