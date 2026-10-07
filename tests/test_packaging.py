@@ -1,9 +1,10 @@
 import ast
+import os
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from unittest import TestCase
+from unittest import TestCase, skipIf
 
 import yaml
 
@@ -70,6 +71,7 @@ class TestPackaging(TestCase):
         self.assertIn("sentinel2-mt-wrapper.sh", rpm)
         self.assertIn("sentinel2-mt-wrapper.sh", arch)
 
+    @skipIf(os.name == "nt", "wrapper POSIX é validado no workflow Linux")
     def test_wrapper_executa_binario_adjacente_e_repassa_argumentos(self) -> None:
         with tempfile.TemporaryDirectory() as temporario:
             pasta = Path(temporario)
