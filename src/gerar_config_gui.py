@@ -1322,7 +1322,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._operacao_em_execucao != "analisar" or not linha.startswith(marcador):
             return
         caminho = Path(linha[len(marcador):].strip()).expanduser()
-        if caminho.is_absolute() or ".." in caminho.parts or caminho.suffix.lower() != ".json":
+        if caminho.anchor or ".." in caminho.parts or caminho.suffix.lower() != ".json":
             return
         self._resultado_pendente = ROOT / caminho
 
