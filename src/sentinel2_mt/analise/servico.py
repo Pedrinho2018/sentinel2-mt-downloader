@@ -106,8 +106,9 @@ class ServicoAnaliseAgricola:
                 )
             )
             if resumo.erros:
-                raise RuntimeError(
-                    f"O processamento Sentinel-2 terminou com {resumo.erros} erro(s)"
+                self.saida(
+                    f"[ANÁLISE] Aviso: a preparação Sentinel-2 terminou com "
+                    f"{resumo.erros} erro(s); usando os patches válidos disponíveis."
                 )
 
         entradas = self._listar_entradas(inicio, fim)
