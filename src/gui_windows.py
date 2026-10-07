@@ -48,6 +48,8 @@ class WindowsMainWindow(gui.MainWindow):
                 max_itens=self.max_execucao.value(),
                 oauth_json=self.oauth_json.text().strip(),
                 tamanho_lote=self.tamanho_lote.value(),
+                patch_size=int(self.patch_tamanho_px.currentData()),
+                patch_stride=self.patch_stride_px.value(),
             )
         except (FileNotFoundError, TypeError, ValueError) as erro:
             QtWidgets.QMessageBox.warning(self, "Não foi possível executar", str(erro))
