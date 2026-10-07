@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping, Sequence
 import hashlib
 import hmac
+import ntpath
 import os
 from pathlib import Path
 import re
@@ -40,6 +41,9 @@ def _raizes_padrao() -> tuple[Path, ...]:
 
 
 def _parece_url(valor: str) -> bool:
+    unidade, _ = ntpath.splitdrive(valor)
+    if unidade:
+        return False
     analisado = urlparse(valor)
     return bool(analisado.scheme or analisado.netloc) or valor.startswith("//")
 
