@@ -1,6 +1,7 @@
 import csv
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest import TestCase
 
 import numpy as np
@@ -69,7 +70,38 @@ class HistoricoFake:
         self.registros.append(registro)
 
 
+class ColetaComErro:
+    def __init__(self, *_args, **_kwargs) -> None:
+        pass
+
+    def executar(self, _opcoes):
+        return SimpleNamespace(erros=2)
+
+
 class TestServicoAnaliseAgricola(TestCase):
+    def test_falha_parcial_de_coleta_nao_aborta_antes_de_procurar_patches(self) -> None:
+        with TemporaryDirectory() as temporario:
+            raiz = Path(temporario)
+            config_path = raiz / "config" / "config.yaml"
+            config_path.parent.mkdir()
+            config_path.write_text(CONFIG, encoding="utf-8")
+            config = ConfiguracaoProjeto.carregar(config_path, raiz=raiz)
+            mensagens: list[str] = []
+            servico = ServicoAnaliseAgricola(
+                config,
+                detector_factory=DetectorFake,
+                servico_coleta_factory=ColetaComErro,
+                historico_factory=HistoricoFake,
+                saida=mensagens.append,
+            )
+
+            with self.assertRaisesRegex(ValueError, "Nenhum patch RGB aprovado"):
+                servico.executar(OpcoesAnalise())
+
+            self.assertTrue(
+                any("usando os patches válidos disponíveis" in mensagem for mensagem in mensagens)
+            )
+
     def test_analisa_patches_aprovados_preserva_multibanda_e_gera_artefatos(self) -> None:
         with TemporaryDirectory() as temporario:
             raiz = Path(temporario)
