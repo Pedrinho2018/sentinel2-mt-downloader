@@ -79,15 +79,10 @@ def resolver_caminho_modelo(
 
     candidatos = (informado,) if informado.is_absolute() else tuple(raiz / informado for raiz in raizes)
     for candidato in candidatos:
-        raiz_candidata = next(
-            (raiz for raiz in raizes if _esta_contido(candidato.absolute(), raiz)), None
-        )
-        if raiz_candidata is None:
-            continue
-        relativo = candidato.absolute().relative_to(raiz_candidata)
-        atual = raiz_candidata
+        absoluto = candidato.absolute()
+        atual = Path(absoluto.anchor)
         tem_symlink = False
-        for parte in relativo.parts:
+        for parte in absoluto.parts[1:]:
             atual = atual / parte
             if atual.is_symlink():
                 tem_symlink = True
