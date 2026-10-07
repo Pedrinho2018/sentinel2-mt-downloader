@@ -13,7 +13,12 @@ from .servico import OpcoesColeta, ServicoSentinel2
 
 
 EMPACOTADO = bool(getattr(sys, "frozen", False))
-ROOT = Path.home() if EMPACOTADO else Path(__file__).resolve().parents[2]
+if EMPACOTADO and os.name == "nt":
+    ROOT = Path(sys.executable).resolve().parent
+elif EMPACOTADO:
+    ROOT = Path.home()
+else:
+    ROOT = Path(__file__).resolve().parents[2]
 CONFIG_SISTEMA = Path("/etc/sentinel2-mt/config.yaml")
 
 
