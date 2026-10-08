@@ -40,3 +40,43 @@ A saida em `runs/culturas/` inclui logs, pesos, graficos Ultralytics e `provenie
 ## Hermes (futuro)
 
 Hermes pode invocar o script por subprocesso **somente com aprovacao**, coletar métricas e comparar experimentos. Nao esta integrado neste PR. O detector existente (best.pt) continua sendo usado pela analise atual.
+
+## 4. Automação de ponta a ponta (Ubuntu)
+
+O fluxo automatizado **começa com imagens RGB existentes e um CSV de rótulos já conferidos**. Não faz download automático do MapBiomas nem determina sozinho a cultura de um talhão.
+
+O CSV de entrada deve conter cabeçalho `image,classe,grupo,split`. Exemplo:
+
+```csv
+image,classe,grupo,split
+patch_soja_01.png,soja,talhao_a_2025,train
+patch_milho_02.png,milho,talhao_b_2025,val
+```
+
+É obrigatório fornecer pelo menos uma imagem de **cada uma das quatro classes** em `train` e `val`; `grupo` não pode aparecer em splits diferentes. Para treino de verdade, use muitas amostras verificadas e teste independente. O exemplo acima é ilustrativo e **não atende aos mínimos**.
+
+Executar apenas a conferência, sem cópia nem treinamento:
+
+```bash
+.venv/bin/python tools/pipeline_treino_culturas.py \
+  --imagens data/dataset_rgb --rotulos data/rotulos_culturas.csv --dry-run
+```
+
+Executar preparação + treino, com saída `data/culturas` inicialmente vazia:
+
+```bash
+.venv/bin/python tools/pipeline_treino_culturas.py \
+  --imagens data/dataset_rgb --rotulos data/rotulos_culturas.csv \
+  --epochs 30 --batch 8 --device cpu
+```
+
+Requisitos: imagens PNG/JPG com nomes relativos à pasta `--imagens`, CSV válido, `ultralytics` instalado e pesos iniciais compatíveis. O pipeline **falha de forma explícita** em caso de rótulos ausentes, grupos divididos entre treino/validação ou destino com arquivos anteriores; não sobrescreve datasets.
+
+Para acelerar, teste `--device 0` somente em máquina com GPU NVIDIA/CUDA e PyTorch configurados. Em máquinas sem GPU, mantenha `--device cpu`. Treinamento pode fazer download inicial dos pesos e não ocorre no modo `--dry-run`.
+
+### Ainda não automatizado
+
+- Conversão de mapas anuais/safra MapBiomas em rótulos de patches: exige alinhamento geográfico e temporal, resolução de sobreposições e auditoria.
+- Download de cenas/STAC dentro deste comando: use o downloader já existente.
+- Integração com Hermes, seleção automática de modelos e publicação em produção.
+- Validação externa em talhões e safras independentes.
