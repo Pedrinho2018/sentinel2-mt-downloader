@@ -2,15 +2,17 @@
 
 Este piloto **nao altera** o detector de talhoes existente. O codigo prepara um classificador RGB com quatro classes: soja, milho, algodao e outras. Ainda nao representa um modelo treinado ou validado.
 
-## 1. Preparar ambiente (PowerShell / Windows)
+## 1. Preparar ambiente (Ubuntu Linux)
 
-```powershell
-py -3 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install ultralytics
+```bash
+sudo apt update
+sudo apt install -y python3-venv python3-pip
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install ultralytics
 ```
 
-No Linux, use `.venv/bin/python`. O peso de classificacao inicial sera baixado pela biblioteca na primeira execucao. Isso exige internet.
+No Ubuntu, utilize `.venv/bin/python` nos comandos. O peso de classificacao inicial sera baixado pela biblioteca na primeira execucao. Isso exige internet.
 
 ## 2. Adquirir e auditar rotulos
 
@@ -28,9 +30,9 @@ Insira imagens PNG/JPG verificadas em cada pasta. **Nao distribua patches vizinh
 
 ## 3. Verificar e executar
 
-```powershell
-.\.venv\Scripts\python.exe tools/treinar_culturas_yolo.py --data data/culturas --dry-run
-.\.venv\Scripts\python.exe tools/treinar_culturas_yolo.py --data data/culturas --epochs 30 --batch 8 --device cpu
+```bash
+.venv/bin/python tools/treinar_culturas_yolo.py --data data/culturas --dry-run
+.venv/bin/python tools/treinar_culturas_yolo.py --data data/culturas --epochs 30 --batch 8 --device cpu
 ```
 
 A saida em `runs/culturas/` inclui logs, pesos, graficos Ultralytics e `proveniencia.json`. Valide no teste independente com matriz de confusao, precision/recall/F1 por classe e erro entre safras, **antes de qualquer resultado cientifico**. Treino RGB e apenas baseline: soja/milho/algodao podem exigir classificacao espectral e multitemporal.
