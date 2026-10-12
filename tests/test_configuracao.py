@@ -41,7 +41,10 @@ class TestConfiguracaoProjeto(TestCase):
             self.assertEqual(config.analise.modelo, "analise/models/best.pt")
             self.assertEqual(config.analise.tamanho_inferencia_px, 640)
             self.assertEqual(config.analise.max_imagens, 1000)
-            self.assertEqual(config.caminho(config.download.pasta), raiz / "data/imagens")
+            self.assertEqual(
+                config.caminho(config.download.pasta).resolve(),
+                (raiz / "data/imagens").resolve(),
+            )
 
     def test_rejeita_bbox_incompleto(self) -> None:
         with TemporaryDirectory() as temporario:

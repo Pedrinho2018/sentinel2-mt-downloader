@@ -90,7 +90,8 @@ class GeradorRelatorioAnalise:
                         figuras.append(figura_imagem)
                         pdf.savefig(figura_imagem)
 
-            with temporario.open("rb") as arquivo:
+            with temporario.open("r+b") as arquivo:
+                arquivo.flush()
                 os.fsync(arquivo.fileno())
             os.replace(temporario, destino)
             temporario = None

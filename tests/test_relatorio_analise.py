@@ -34,7 +34,8 @@ class TestRelatorioAnalise(TestCase):
 
             self.assertEqual(resultado, destino)
             self.assertTrue(destino.read_bytes().startswith(b"%PDF"))
-            self.assertEqual(stat.S_IMODE(destino.stat().st_mode), 0o600)
+            if os.name != "nt":
+                self.assertEqual(stat.S_IMODE(destino.stat().st_mode), 0o600)
             self.assertFalse(list(destino.parent.glob(".*.tmp")))
 
     @skipUnless(MATPLOTLIB_DISPONIVEL, "matplotlib não está instalado")

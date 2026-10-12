@@ -331,22 +331,6 @@ class ConfiguracaoProjeto:
         if not 0 <= percentil_min < percentil_max <= 100:
             raise ValueError(f"Percentis de {prefixo} devem respeitar 0 <= min < max <= 100")
 
-    @staticmethod
-    def _validar_rgb(
-        metodo: str,
-        minimo: float,
-        maximo: float,
-        percentil_min: float,
-        percentil_max: float,
-        prefixo: str,
-    ) -> None:
-        if metodo not in {"fixed", "percentile"}:
-            raise ValueError(f"{prefixo}.metodo deve ser fixed ou percentile")
-        if maximo <= minimo:
-            raise ValueError(f"{prefixo}.maximo deve ser maior que minimo")
-        if not 0 <= percentil_min < percentil_max <= 100:
-            raise ValueError(f"Percentis de {prefixo} devem respeitar 0 <= min < max <= 100")
-
     def caminho(self, valor: str | Path) -> Path:
         caminho = Path(valor).expanduser()
         return caminho if caminho.is_absolute() else self.raiz / caminho

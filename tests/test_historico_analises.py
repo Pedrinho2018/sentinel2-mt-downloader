@@ -1,4 +1,5 @@
 from contextlib import closing
+import os
 import json
 from pathlib import Path
 import sqlite3
@@ -17,8 +18,9 @@ class TestHistoricoAnalises(TestCase):
 
             RepositorioHistoricoAnalises(banco)
 
-            self.assertEqual(stat.S_IMODE(pasta.stat().st_mode), 0o700)
-            self.assertEqual(stat.S_IMODE(banco.stat().st_mode), 0o600)
+            if os.name != "nt":
+                self.assertEqual(stat.S_IMODE(pasta.stat().st_mode), 0o700)
+                self.assertEqual(stat.S_IMODE(banco.stat().st_mode), 0o600)
             with closing(sqlite3.connect(banco)) as conexao:
                 self.assertEqual(conexao.execute("PRAGMA user_version").fetchone()[0], 1)
                 self.assertEqual(conexao.execute("PRAGMA journal_mode").fetchone()[0], "wal")

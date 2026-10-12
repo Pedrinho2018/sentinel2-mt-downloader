@@ -168,4 +168,4 @@ class TestDetectorAgricola(TestCase):
 
             resolvido = resolver_caminho_modelo("modelos/agricola.pt", [raiz])
 
-            self.assertEqual(resolvido, modelo_path)
+            self.assertEqual(resolvido, modelo_path.resolve())
