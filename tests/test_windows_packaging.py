@@ -26,6 +26,11 @@ class TestWindowsPackaging(TestCase):
         self.assertIn("patch_stride=self.patch_stride_px.value()", conteudo)
         self.assertNotEqual("Sentinel2-MT.exe".casefold(), "Sentinel2-MT-Core.exe".casefold())
 
+    def test_gui_windows_encaminha_operacoes_do_assistente_ao_motor(self) -> None:
+        conteudo = (ROOT / "src/gui_windows.py").read_text(encoding="utf-8")
+        self.assertIn('return str(BACKEND_EXE), ["--cli", *argumentos], ROOT', conteudo)
+        self.assertIn("gui.comando_cli_empacotado = comando_cli_windows", conteudo)
+
     def test_spec_windows_gera_aplicacao_sem_console(self) -> None:
         conteudo = (ROOT / "packaging/sentinel2-mt-gui-windows.spec").read_text(
             encoding="utf-8"

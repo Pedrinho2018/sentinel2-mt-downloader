@@ -37,7 +37,8 @@ CONFIG_PADRAO = configuracao_padrao()
 
 def emitir_progresso_json(evento: dict) -> None:
     """Uma linha por evento; `flush` garante entrega imediata ao QProcess."""
-    print(f"[PROGRESSO] {json.dumps(evento, ensure_ascii=False)}", flush=True)
+    # JSON em ASCII (\uXXXX): no Windows o console usa cp1252 e a GUI lê UTF-8.
+    print(f"[PROGRESSO] {json.dumps(evento, ensure_ascii=True)}", flush=True)
 
 
 class AplicacaoCLI:

@@ -21,6 +21,21 @@ gui.LOCAL_DB = ROOT / "config" / "configuracoes_local.db"
 gui.SCRIPT_CLI = BACKEND_EXE if EMPACOTADO else ROOT / "src" / "baixar_inpe_mt.py"
 
 
+def comando_cli_windows(argumentos: list[str]) -> tuple[str, list[str], Path]:
+    """No pacote Windows, toda operação da CLI usa o motor com console separado.
+
+    O executável da interface não aceita `--cli`; o assistente de download e o
+    painel de treinamento chamam esta função por meio de `gui.comando_cli_empacotado`.
+    """
+    if not EMPACOTADO:
+        return gui._comando_cli_original(argumentos)
+    return str(BACKEND_EXE), ["--cli", *argumentos], ROOT
+
+
+gui._comando_cli_original = gui.comando_cli_empacotado
+gui.comando_cli_empacotado = comando_cli_windows
+
+
 class WindowsMainWindow(gui.MainWindow):
     def _executar(self) -> None:
         if not EMPACOTADO:
