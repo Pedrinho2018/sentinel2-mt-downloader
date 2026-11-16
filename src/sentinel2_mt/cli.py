@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -34,6 +35,11 @@ def configuracao_padrao() -> Path:
 CONFIG_PADRAO = configuracao_padrao()
 
 
+def emitir_progresso_json(evento: dict) -> None:
+    """Uma linha por evento; `flush` garante entrega imediata ao QProcess."""
+    print(f"[PROGRESSO] {json.dumps(evento, ensure_ascii=False)}", flush=True)
+
+
 class AplicacaoCLI:
     def criar_parser(self) -> argparse.ArgumentParser:
         parser = argparse.ArgumentParser(description="Downloader Sentinel-2 MT com filtro automático de nuvens via SCL.")
@@ -55,6 +61,15 @@ class AplicacaoCLI:
             "--analisar",
             action="store_true",
             help="Baixa/processa as cenas e executa a análise agrícola local.",
+        )
+        parser.add_argument(
+            "--cenas",
+            help="IDs de cenas separados por vírgula; restringe a operação a essas cenas.",
+        )
+        parser.add_argument(
+            "--progresso-json",
+            action="store_true",
+            help="Emite linhas [PROGRESSO] {json} para interfaces gráficas.",
         )
         parser.add_argument("--oauth-json", type=Path, help="Arquivo JSON OAuth; sobrescreve a configuração.")
         parser.add_argument("--lote", type=int, help="Sobrescreve o tamanho do lote de sincronização.")
@@ -100,8 +115,10 @@ class AplicacaoCLI:
                 ),
                 patch_size=args.patch_size,
                 patch_stride=args.patch_stride,
+                cenas=tuple(cena.strip() for cena in (args.cenas or "").split(",") if cena.strip()),
             )
-            resumo = ServicoSentinel2(config).executar(opcoes)
+            eventos = emitir_progresso_json if args.progresso_json else None
+            resumo = ServicoSentinel2(config, eventos=eventos).executar(opcoes)
             return 0 if resumo.erros == 0 else 2
         except (FileNotFoundError, ValueError) as exc:
             print(f"[ERRO] {exc}", file=sys.stderr)

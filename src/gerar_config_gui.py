@@ -9,18 +9,49 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtGui, QtNetwork, QtWidgets
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from sentinel2_mt.config_builder import GeradorConfiguracao, gerar_config, salvar_config as persistir_config
 from sentinel2_mt.configuracao import ConfiguracaoProjeto
 from sentinel2_mt.analise.historico import RepositorioHistoricoAnalises
+from sentinel2_mt.analise.resultados import (
+    AVISO_AREA,
+    AVISO_CULTURA,
+    aviso_classes_modelo,
+    ItemResultado,
+    ResultadoVisualizacao,
+    carregar_resultado,
+    exportar_csv,
+    exportar_json,
+    filtrar_historico,
+    indicadores_vegetacao,
+    modelo_classificacao_aprovado,
+)
 from sentinel2_mt.gui_support import (
     LocalConfigStore,
     montar_argumentos_operacao,
     normalizar_bbox,
 )
 from sentinel2_mt.gui_theme import CORES, folha_estilos
+from sentinel2_mt.painel import ResumoPainel, coletar_resumo_painel, formatar_bytes
+from sentinel2_mt.assistente_download import (
+    CenaEncontrada,
+    EstadoDownload,
+    estimar_tamanho,
+    filtrar_cenas,
+    ler_evento,
+    media_tamanho_cena_local,
+)
+from sentinel2_mt.http import listar_parciais_legados, remover_parciais_legados
+from sentinel2_mt.area import (
+    AreaImportada,
+    Municipio,
+    buscar_municipios,
+    carregar_municipios,
+    importar_area,
+    normalizar_texto,
+)
 
 
 EMPACOTADO = bool(getattr(sys, "frozen", False))
@@ -41,6 +72,7 @@ else:
 
 GUI_ASSETS = Path(getattr(sys, "_MEIPASS", ROOT)) / "assets"
 FUNDO_GUI = GUI_ASSETS / "mato-grosso-background.png"
+MUNICIPIOS_IBGE = GUI_ASSETS / "municipios_ibge.json"
 
 # Compatibilidade com integrações que importavam esta função do módulo da GUI.
 bbox_para_yaml = normalizar_bbox
@@ -242,6 +274,7 @@ class MapaWidget(QWebEngineView):
     areaSelecionada = QtCore.Signal(object)
     mapaPronto = QtCore.Signal()
     mapaErro = QtCore.Signal(str)
+    desenhoConcluido = QtCore.Signal()
 
     def __init__(self, bbox_inicial: list[float], parent=None) -> None:
         super().__init__(parent)
@@ -264,6 +297,12 @@ class MapaWidget(QWebEngineView):
         self._timer_estado.setInterval(250)
         self._timer_estado.timeout.connect(self._verificar_estado)
         self.loadFinished.connect(self._ao_carregar)
+
+        # Verifica a seleção apenas enquanto o modo de desenho está ativo.
+        self._versao_selecao = 0
+        self._timer_desenho = QtCore.QTimer(self)
+        self._timer_desenho.setInterval(300)
+        self._timer_desenho.timeout.connect(self._verificar_desenho)
 
     def showEvent(self, evento: QtGui.QShowEvent) -> None:
         super().showEvent(evento)
@@ -356,6 +395,33 @@ class MapaWidget(QWebEngineView):
             f"window.setSelection && window.setSelection({json.dumps(self._bbox_pendente)});"
         )
 
+    def ativar_desenho(self, ativo: bool = True) -> bool:
+        """Liga o desenho com clique e arraste, sem exigir a tecla Shift."""
+        if not self._mapa_pronto:
+            return False
+        self.page().runJavaScript(
+            f"window.setDrawMode && window.setDrawMode({'true' if ativo else 'false'});"
+        )
+        if ativo:
+            self._timer_desenho.start()
+        else:
+            self._timer_desenho.stop()
+        return True
+
+    def _verificar_desenho(self) -> None:
+        self.page().runJavaScript("window.selectionVersion || 0", self._receber_versao_selecao)
+
+    def _receber_versao_selecao(self, valor: object) -> None:
+        try:
+            versao = int(valor or 0)
+        except (TypeError, ValueError):
+            return
+        if versao > self._versao_selecao:
+            self._versao_selecao = versao
+            self._timer_desenho.stop()
+            self.capturar_bbox()
+            self.desenhoConcluido.emit()
+
     def capturar_bbox(self) -> None:
         if not self._mapa_pronto:
             self.areaSelecionada.emit(None)
@@ -395,9 +461,11 @@ class MapaWidget(QWebEngineView):
             background: rgba(16,43,36,.92); color: white; border-radius: 8px; padding: 8px 12px;
             font: 12px sans-serif; box-shadow: 0 3px 12px rgba(0,0,0,.18); }
         </style></head><body><div id="map"></div>
-        <div class="hint">Segure Shift e arraste para selecionar uma área</div>
+        <div class="hint" id="hint">Use "Desenhar área" ou segure Shift e arraste para selecionar</div>
         <script nonce="sentinel2-map">
           window.currentSelection = null;
+          window.selectionVersion = 0;
+          window.drawMode = false;
           window.mapReady = false;
           window.mapError = '';
           let map = null;
@@ -416,6 +484,17 @@ class MapaWidget(QWebEngineView):
             setTimeout(() => map.invalidateSize(), 100);
           };
 
+          window.setDrawMode = function(ativo) {
+            window.drawMode = !!ativo;
+            const dica = document.getElementById('hint');
+            if (dica) {
+              dica.textContent = window.drawMode
+                ? 'Clique e arraste no mapa para desenhar a área'
+                : 'Use "Desenhar área" ou segure Shift e arraste para selecionar';
+            }
+            if (map) map.getContainer().style.cursor = window.drawMode ? 'crosshair' : '';
+          };
+
           window.invalidateMapSize = function() {
             if (map) map.invalidateSize();
           };
@@ -427,7 +506,7 @@ class MapaWidget(QWebEngineView):
                 attribution: '&copy; OpenStreetMap contributors'
               }).addTo(map);
               map.on('mousedown', function(event) {
-                if (!event.originalEvent.shiftKey) return;
+                if (!event.originalEvent.shiftKey && !window.drawMode) return;
                 start = event.latlng;
                 map.dragging.disable();
               });
@@ -446,6 +525,8 @@ class MapaWidget(QWebEngineView):
                 ], false);
                 start = null;
                 map.dragging.enable();
+                window.selectionVersion += 1;
+                window.setDrawMode(false);
               });
               window.addEventListener('resize', window.invalidateMapSize);
               window.mapReady = true;
@@ -477,6 +558,15 @@ class MapaWidget(QWebEngineView):
         """
 
 
+ALTURA_IMAGEM_RESULTADO = 230
+
+
+class _PontePainel(QtCore.QObject):
+    """Entrega o resumo calculado em segundo plano à thread da interface."""
+
+    concluido = QtCore.Signal(object)
+
+
 class MainWindow(QtWidgets.QMainWindow):
     DESCRICOES_BANDAS = {
         "B02": "Azul; destaca água e auxilia na composição RGB.",
@@ -494,11 +584,13 @@ class MainWindow(QtWidgets.QMainWindow):
     }
     COLECOES_DISPONIVEIS = ("S2-16D-2", "S2_L2A-1")
     PAGINAS = (
-        ("Visão geral", "Execute e acompanhe as operações"),
+        ("Início", "Resumo do seu trabalho e próximo passo recomendado"),
+        ("Operações", "Execute e acompanhe as operações"),
         ("Área e período", "Escolha a região no mapa"),
+        ("Baixar imagens", "Escolha o período, as cenas e acompanhe o download"),
         ("Dados e qualidade", "Ajuste STAC, bandas e filtros"),
         ("Google Drive", "Configure OAuth e sincronização"),
-        ("Análise da região", "Consulte detecções, imagens e estatísticas"),
+        ("Análise da região", "Resultados agrícolas: talhões detectados e culturas"),
         ("Histórico", "Acesse análises e relatórios locais"),
         ("Configuração", "Revise YAML e perfis locais"),
         ("Sobre", "Conheça o aplicativo e seu fluxo de trabalho"),
@@ -523,6 +615,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._ultimo_resultado: dict[str, Any] | None = None
         self._operacao_em_execucao = ""
         self._resultado_pendente: Path | None = None
+        self._assist_cenas: list[CenaEncontrada] = []
+        self._assist_estado = EstadoDownload()
+        self._assist_cancelado = False
+        self._assist_rede = QtNetwork.QNetworkAccessManager(self)
+        self._assist_resposta_miniatura: QtNetwork.QNetworkReply | None = None
+        self._pool_painel = QtCore.QThreadPool(self)
+        self._pool_painel.setMaxThreadCount(1)
+        self._painel_em_coleta = False
+        self._ponte_painel = _PontePainel(self)
+        self._ponte_painel.concluido.connect(self._aplicar_resumo_painel)
 
         self._criar_campos()
         self._montar_janela()
@@ -530,6 +632,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._atualizar_preview_yaml()
         self._recarregar_perfis()
         self._atualizar_operacao()
+        QtCore.QTimer.singleShot(0, self._atualizar_painel)
+
+    def _indice_pagina(self, titulo: str) -> int:
+        """Localiza páginas pelo título para não depender da ordem da navegação."""
+        for indice, (nome, _) in enumerate(self.PAGINAS):
+            if nome == titulo:
+                return indice
+        raise KeyError(titulo)
 
     def _criar_campos(self) -> None:
         self.nome_regiao = QtWidgets.QLineEdit("Mato Grosso")
@@ -703,8 +813,10 @@ class MainWindow(QtWidgets.QMainWindow):
         layout_area.addLayout(self._criar_cabecalho())
 
         self.stack = QtWidgets.QStackedWidget()
+        self.stack.addWidget(self._pagina_inicio())
         self.stack.addWidget(self._pagina_visao_geral())
         self.stack.addWidget(self._pagina_area())
+        self.stack.addWidget(self._pagina_download())
         self.stack.addWidget(self._pagina_dados())
         self.stack.addWidget(self._pagina_drive())
         self.stack.addWidget(self._pagina_analise())
@@ -775,6 +887,218 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.status)
         return layout
 
+    INDICADORES_PAINEL = (
+        ("regioes", "Regiões salvas"),
+        ("cenas_catalogadas", "Imagens encontradas"),
+        ("cenas_baixadas", "Imagens baixadas"),
+        ("patches", "Recortes prontos para análise"),
+        ("ultima_analise", "Última análise"),
+        ("modelos", "Modelos instalados"),
+        ("disco", "Espaço ocupado"),
+        ("tarefa", "Tarefa atual"),
+    )
+
+    def _pagina_inicio(self) -> QtWidgets.QWidget:
+        pagina = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(pagina)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+
+        acoes = Cartao(
+            "O que você quer fazer?",
+            "Escolha uma etapa. Nada é baixado ou analisado sem você confirmar na tela seguinte.",
+        )
+        linha_acoes = QtWidgets.QHBoxLayout()
+        self.btn_inicio_regiao = botao("Selecionar região", "primaryButton")
+        self.btn_inicio_buscar = botao("Buscar imagens")
+        self.btn_inicio_analisar = botao("Analisar região")
+        self.btn_inicio_resultados = botao("Consultar resultados")
+        self.btn_inicio_regiao.clicked.connect(
+            lambda: self._navegar(self._indice_pagina("Área e período"))
+        )
+        self.btn_inicio_buscar.clicked.connect(
+            lambda: self._navegar(self._indice_pagina("Baixar imagens"))
+        )
+        self.btn_inicio_analisar.clicked.connect(lambda: self._preparar_operacao("analisar"))
+        self.btn_inicio_resultados.clicked.connect(
+            lambda: self._navegar(self._indice_pagina("Análise da região"))
+        )
+        for item in (
+            self.btn_inicio_regiao,
+            self.btn_inicio_buscar,
+            self.btn_inicio_analisar,
+            self.btn_inicio_resultados,
+        ):
+            item.setMinimumHeight(44)
+            linha_acoes.addWidget(item)
+        acoes.layout_principal.addLayout(linha_acoes)
+        layout.addWidget(acoes)
+
+        indicadores = QtWidgets.QGridLayout()
+        indicadores.setHorizontalSpacing(14)
+        indicadores.setVerticalSpacing(14)
+        self.painel_valores: dict[str, QtWidgets.QLabel] = {}
+        self.painel_detalhes: dict[str, QtWidgets.QLabel] = {}
+        for posicao, (chave, titulo) in enumerate(self.INDICADORES_PAINEL):
+            cartao = Cartao(titulo)
+            valor = QtWidgets.QLabel("…")
+            valor.setObjectName("statValue")
+            valor.setAccessibleName(titulo)
+            detalhe = QtWidgets.QLabel("")
+            detalhe.setObjectName("cardHelp")
+            detalhe.setWordWrap(True)
+            cartao.layout_principal.addWidget(valor)
+            cartao.layout_principal.addWidget(detalhe)
+            cartao.layout_principal.addStretch()
+            self.painel_valores[chave] = valor
+            self.painel_detalhes[chave] = detalhe
+            indicadores.addWidget(cartao, posicao // 4, posicao % 4)
+        layout.addLayout(indicadores)
+
+        orientacao = Cartao("Próximo passo recomendado")
+        self.painel_proxima_acao = QtWidgets.QLabel("Calculando o resumo local…")
+        self.painel_proxima_acao.setWordWrap(True)
+        self.painel_avisos = QtWidgets.QLabel("")
+        self.painel_avisos.setObjectName("cardHelp")
+        self.painel_avisos.setWordWrap(True)
+        self.btn_atualizar_painel = botao("Atualizar resumo")
+        self.btn_atualizar_painel.clicked.connect(self._atualizar_painel)
+        orientacao.layout_principal.addWidget(self.painel_proxima_acao)
+        orientacao.layout_principal.addWidget(self.painel_avisos)
+        orientacao.layout_principal.addWidget(
+            self.btn_atualizar_painel, 0, QtCore.Qt.AlignmentFlag.AlignLeft
+        )
+        layout.addWidget(orientacao)
+        layout.addStretch()
+        return pagina
+
+    def _preparar_operacao(self, operacao: str) -> None:
+        """Seleciona a operação e leva o usuário à tela onde ele confirma a execução."""
+        indice = self.operacao.findData(operacao)
+        if indice >= 0:
+            self.operacao.setCurrentIndex(indice)
+        self._navegar(self._indice_pagina("Operações"))
+
+    def _config_painel(self) -> ConfiguracaoProjeto | None:
+        # Usa somente o arquivo escolhido na GUI, sem recorrer a outro YAML.
+        caminho = Path(self.output_path.text().strip() or DEFAULT_CONFIG).expanduser()
+        if not caminho.is_file():
+            return None
+        return ConfiguracaoProjeto.carregar(caminho, raiz=ROOT)
+
+    def _atualizar_painel(self, sincrono: bool = False) -> None:
+        """Recalcula o resumo em segundo plano para não bloquear a interface."""
+        if self._painel_em_coleta:
+            return
+        try:
+            config = self._config_painel()
+            regioes = len(self.store.listar())
+        except (OSError, TypeError, ValueError, KeyError, yaml.YAMLError) as erro:
+            self.painel_proxima_acao.setText(f"Não foi possível ler a configuração: {erro}")
+            return
+        if config is None:
+            self.painel_proxima_acao.setText(
+                "Nenhuma configuração encontrada. Selecione uma região e salve a configuração."
+            )
+            return
+        self._painel_em_coleta = True
+        self.btn_atualizar_painel.setEnabled(False)
+        ponte = self._ponte_painel
+
+        def coletar() -> None:
+            try:
+                resultado: object = coletar_resumo_painel(config, regioes_salvas=regioes)
+            except Exception as erro:  # o painel nunca deve derrubar a GUI
+                resultado = erro
+            ponte.concluido.emit(resultado)
+
+        if sincrono:
+            coletar()
+        else:
+            self._pool_painel.start(coletar)
+
+    def _aplicar_resumo_painel(self, resultado: object) -> None:
+        self._painel_em_coleta = False
+        self.btn_atualizar_painel.setEnabled(True)
+        if not isinstance(resultado, ResumoPainel):
+            self.painel_proxima_acao.setText(f"Não foi possível calcular o resumo: {resultado}")
+            return
+        self._ultimo_resumo_painel = resultado
+        valores = self.painel_valores
+        detalhes = self.painel_detalhes
+        valores["regioes"].setText(str(resultado.regioes_salvas))
+        detalhes["regioes"].setText("Perfis locais de área e período.")
+        valores["cenas_catalogadas"].setText(str(resultado.cenas_catalogadas))
+        detalhes["cenas_catalogadas"].setText("Cenas registradas no catálogo de busca.")
+        valores["cenas_baixadas"].setText(str(resultado.cenas_baixadas))
+        detalhes["cenas_baixadas"].setText(
+            f"{resultado.downloads_parciais} download(s) incompleto(s) a retomar; "
+            f"{resultado.parciais_legados} temporário(s) antigo(s)."
+            if resultado.downloads_parciais or resultado.parciais_legados
+            else "Cenas com bandas salvas no computador."
+        )
+        valores["patches"].setText(str(resultado.patches_aprovados_catalogo))
+        detalhes["patches"].setText(
+            f"{resultado.patches_em_disco} recorte(s) no disco; "
+            + (
+                "catálogo encontrado."
+                if resultado.catalogo_patches_existe
+                else "catálogo de recortes ausente."
+            )
+        )
+        ultima = resultado.ultima_analise
+        if ultima is None:
+            valores["ultima_analise"].setText("Nenhuma")
+            detalhes["ultima_analise"].setText("Ainda não há análises no histórico local.")
+        else:
+            valores["ultima_analise"].setText(ultima.criado_em[:10] or "—")
+            detalhes["ultima_analise"].setText(
+                f"{ultima.regiao or 'Região sem nome'} • {ultima.total_deteccoes} detecção(ões)"
+                f" • modelo {ultima.modelo_versao or 'não informado'}"
+            )
+        conferidos = sum(1 for modelo in resultado.modelos if modelo.integridade_conferida)
+        valores["modelos"].setText(str(len(resultado.modelos)))
+        ativo = next((modelo for modelo in resultado.modelos if modelo.ativo), None)
+        if ativo is None:
+            detalhes["modelos"].setText("Nenhum modelo ativo encontrado.")
+        else:
+            tarefa = {"detection": "detecção por caixas", "classify": "classificação"}.get(
+                ativo.tarefa, ativo.tarefa or "tarefa não informada"
+            )
+            integridade = {
+                "conferida": "integridade SHA-256 conferida",
+                "divergente": "SHA-256 DIVERGENTE do manifesto",
+                "sem_manifesto": "sem manifesto SHA-256",
+            }[ativo.integridade]
+            detalhes["modelos"].setText(
+                f"Ativo: {ativo.versao or ativo.arquivo} ({tarefa}); {integridade}. "
+                f"{conferidos} com integridade conferida. Integridade não equivale a "
+                "validação científica."
+            )
+        valores["disco"].setText(formatar_bytes(resultado.bytes_total))
+        partes = resultado.bytes_por_area
+        detalhes["disco"].setText(
+            f"Imagens {formatar_bytes(partes.get('imagens', 0))} • "
+            f"recortes {formatar_bytes(partes.get('dataset', 0))} • "
+            f"análises {formatar_bytes(partes.get('analises', 0))}"
+        )
+        self._atualizar_tarefa_painel()
+        self.painel_proxima_acao.setText(resultado.proxima_acao)
+        self.painel_avisos.setText(
+            "\n".join(f"⚠ {aviso}" for aviso in resultado.avisos)
+            if resultado.avisos
+            else "Nenhum problema encontrado nos arquivos locais."
+        )
+
+    def _atualizar_tarefa_painel(self) -> None:
+        if not hasattr(self, "painel_valores"):
+            return
+        executando = self.processo.state() != QtCore.QProcess.ProcessState.NotRunning
+        self.painel_valores["tarefa"].setText("Em andamento" if executando else "Nenhuma")
+        self.painel_detalhes["tarefa"].setText(
+            self.operacao.currentText() if executando else f"Último estado: {self.status.text()}"
+        )
+
     def _pagina_visao_geral(self) -> QtWidgets.QWidget:
         pagina = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(pagina)
@@ -829,8 +1153,37 @@ class MainWindow(QtWidgets.QMainWindow):
 
         bbox_inicial = [self.oeste.value(), self.sul.value(), self.leste.value(), self.norte.value()]
         self.mapa = MapaWidget(bbox_inicial, self)
-        mapa_card = Cartao("Área de interesse", "Navegue normalmente; use Shift + arraste para desenhar.")
+        mapa_card = Cartao(
+            "Área de interesse",
+            "Pesquise um município, desenhe no mapa ou importe um limite. "
+            "A busca de imagens usa o retângulo mostrado em verde.",
+        )
+        busca = QtWidgets.QHBoxLayout()
+        self.busca_area = QtWidgets.QLineEdit()
+        self.busca_area.setPlaceholderText("Pesquisar município ou região favorita (ex.: Sorriso)")
+        self.busca_area.setClearButtonEnabled(True)
+        self.busca_area.textChanged.connect(self._pesquisar_area)
+        busca.addWidget(self.busca_area, 1)
+        self.btn_desenhar_area = botao("Desenhar área")
+        self.btn_desenhar_area.setCheckable(True)
+        self.btn_desenhar_area.toggled.connect(self._alternar_desenho)
+        self.btn_importar_area = botao("Importar limite…")
+        self.btn_importar_area.setToolTip("GeoJSON (.geojson, .json) ou Shapefile (.shp com .prj)")
+        self.btn_importar_area.clicked.connect(self._importar_limite)
+        busca.addWidget(self.btn_desenhar_area)
+        busca.addWidget(self.btn_importar_area)
+        mapa_card.layout_principal.addLayout(busca)
+        self.resultados_area = QtWidgets.QListWidget()
+        self.resultados_area.setMaximumHeight(150)
+        self.resultados_area.hide()
+        self.resultados_area.itemActivated.connect(self._usar_resultado_area)
+        self.resultados_area.itemClicked.connect(self._usar_resultado_area)
+        mapa_card.layout_principal.addWidget(self.resultados_area)
         mapa_card.layout_principal.addWidget(self.mapa, 1)
+        self.area_mensagem = QtWidgets.QLabel("")
+        self.area_mensagem.setObjectName("cardHelp")
+        self.area_mensagem.setWordWrap(True)
+        mapa_card.layout_principal.addWidget(self.area_mensagem)
         aplicar = botao("Aplicar seleção do mapa", "primaryButton")
         aplicar.clicked.connect(self.mapa.capturar_bbox)
         mapa_card.layout_principal.addWidget(aplicar)
@@ -847,12 +1200,705 @@ class MainWindow(QtWidgets.QMainWindow):
         form.addRow(rotulo_com_ajuda("Leste", "Longitude do lado direito da área. Deve ser maior que Oeste."), self.leste)
         form.addRow(rotulo_com_ajuda("Norte", "Latitude do lado superior da área. Deve ser maior que Sul."), self.norte)
         detalhes.layout_principal.addLayout(form)
-        salvar_perfil = botao("Salvar como perfil local")
+        salvar_perfil = botao("Salvar como região favorita")
         salvar_perfil.clicked.connect(self._salvar_perfil)
         detalhes.layout_principal.addWidget(salvar_perfil)
-        detalhes.layout_principal.addStretch()
+        rotulo_favoritas = QtWidgets.QLabel("Regiões favoritas")
+        rotulo_favoritas.setObjectName("cardTitle")
+        detalhes.layout_principal.addWidget(rotulo_favoritas)
+        self.favoritos_area = QtWidgets.QListWidget()
+        self.favoritos_area.setToolTip("Clique duas vezes para abrir a região.")
+        self.favoritos_area.itemDoubleClicked.connect(self._abrir_favorita)
+        detalhes.layout_principal.addWidget(self.favoritos_area, 1)
         layout.addWidget(detalhes, 1)
         return pagina
+
+    # ------------------------------------------------------------ Área de interesse
+
+    def _municipios(self) -> list[Municipio]:
+        if not hasattr(self, "_cache_municipios"):
+            try:
+                self._cache_municipios = carregar_municipios(MUNICIPIOS_IBGE)
+            except (OSError, ValueError) as erro:
+                self.statusBar().showMessage(f"Lista de municípios inválida: {erro}", 6000)
+                self._cache_municipios = []
+        return self._cache_municipios
+
+    def _pesquisar_area(self, termo: str) -> None:
+        self.resultados_area.clear()
+        alvo = normalizar_texto(termo)
+        if len(alvo) < 2:
+            self.resultados_area.hide()
+            return
+        for perfil in self.store.listar():
+            if alvo in normalizar_texto(str(perfil["nome_regiao"])):
+                item = QtWidgets.QListWidgetItem(
+                    f"★ {perfil['nome_regiao']} ({perfil['uf'] or '—'}) — região favorita"
+                )
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, ("favorita", int(perfil["id"])))
+                self.resultados_area.addItem(item)
+        municipios = self._municipios()
+        for municipio in buscar_municipios(municipios, termo, limite=10):
+            item = QtWidgets.QListWidgetItem(f"{municipio.nome} ({municipio.uf}) — município")
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, ("municipio", municipio))
+            self.resultados_area.addItem(item)
+        if self.resultados_area.count() == 0:
+            texto = (
+                "Nenhum resultado encontrado."
+                if municipios
+                else "Lista de municípios não instalada; gere-a com tools/gerar_municipios_ibge.py."
+            )
+            vazio = QtWidgets.QListWidgetItem(texto)
+            vazio.setFlags(QtCore.Qt.ItemFlag.NoItemFlags)
+            self.resultados_area.addItem(vazio)
+        self.resultados_area.show()
+
+    def _usar_resultado_area(self, item: QtWidgets.QListWidgetItem) -> None:
+        dados = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        if not dados:
+            return
+        tipo, valor = dados
+        if tipo == "favorita":
+            self._abrir_favorita_por_id(int(valor))
+        elif tipo == "municipio":
+            self._aplicar_area(
+                valor.nome,
+                valor.uf,
+                list(valor.bbox),
+                "Município do IBGE (retângulo aproximado). Ajuste a área se precisar.",
+            )
+        self.resultados_area.hide()
+
+    def _aplicar_area(self, nome: str, uf: str, bbox: list[float], mensagem: str) -> None:
+        bbox = normalizar_bbox(bbox)
+        self.nome_regiao.setText(nome)
+        if uf:
+            self.uf.setText(uf[:2].upper())
+        self.oeste.setValue(bbox[0])
+        self.sul.setValue(bbox[1])
+        self.leste.setValue(bbox[2])
+        self.norte.setValue(bbox[3])
+        self.mapa.exibir_bbox(bbox)
+        self.area_mensagem.setText(mensagem)
+        self._atualizar_preview_yaml()
+
+    def _alternar_desenho(self, ativo: bool) -> None:
+        if ativo and not self.mapa.ativar_desenho(True):
+            self.btn_desenhar_area.setChecked(False)
+            self.area_mensagem.setText(
+                "O mapa ainda não está pronto. Aguarde o carregamento ou edite as coordenadas."
+            )
+            return
+        if not ativo:
+            self.mapa.ativar_desenho(False)
+            return
+        self.area_mensagem.setText("Clique e arraste no mapa para desenhar a área.")
+
+    def _desenho_concluido(self) -> None:
+        self.btn_desenhar_area.blockSignals(True)
+        self.btn_desenhar_area.setChecked(False)
+        self.btn_desenhar_area.blockSignals(False)
+
+    def _importar_limite(self) -> None:
+        caminho, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Importar limite da área",
+            str(Path.home()),
+            "Limites geográficos (*.geojson *.json *.shp)",
+        )
+        if caminho:
+            self._importar_limite_de(Path(caminho))
+
+    def _importar_limite_de(self, caminho: Path) -> AreaImportada | None:
+        try:
+            area = importar_area(caminho)
+        except (OSError, ValueError) as erro:
+            QtWidgets.QMessageBox.warning(self, "Não foi possível importar o limite", str(erro))
+            return None
+        mensagem = f"Limite importado de {area.origem} ({area.crs_origem})."
+        if area.avisos:
+            mensagem += " " + " ".join(area.avisos)
+        self._aplicar_area(area.nome, self.uf.text(), list(area.bbox), mensagem)
+        return area
+
+    def _recarregar_favoritas(self) -> None:
+        if not hasattr(self, "favoritos_area"):
+            return
+        self.favoritos_area.clear()
+        perfis = self.store.listar()
+        for perfil in perfis:
+            item = QtWidgets.QListWidgetItem(f"{perfil['nome_regiao']} ({perfil['uf'] or '—'})")
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, int(perfil["id"]))
+            self.favoritos_area.addItem(item)
+        if not perfis:
+            vazio = QtWidgets.QListWidgetItem("Nenhuma região salva ainda.")
+            vazio.setFlags(QtCore.Qt.ItemFlag.NoItemFlags)
+            self.favoritos_area.addItem(vazio)
+
+    def _abrir_favorita(self, item: QtWidgets.QListWidgetItem) -> None:
+        perfil_id = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        if perfil_id is not None:
+            self._abrir_favorita_por_id(int(perfil_id))
+
+    def _abrir_favorita_por_id(self, perfil_id: int) -> None:
+        perfil = self.store.carregar(perfil_id)
+        if perfil is None:
+            return
+        self._aplicar_dados(json.loads(perfil["payload"]))
+        self.area_mensagem.setText(f"Região favorita '{perfil['nome_regiao']}' aberta.")
+
+    PASSOS_ASSISTENTE = ("1. Região e período", "2. Escolher cenas", "3. Baixar")
+
+    def _pagina_download(self) -> QtWidgets.QWidget:
+        pagina = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(pagina)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        passos = QtWidgets.QHBoxLayout()
+        self.assist_rotulos_passos: list[QtWidgets.QLabel] = []
+        for nome in self.PASSOS_ASSISTENTE:
+            rotulo = QtWidgets.QLabel(nome)
+            rotulo.setObjectName("stepLabel")
+            rotulo.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            passos.addWidget(rotulo, 1)
+            self.assist_rotulos_passos.append(rotulo)
+        layout.addLayout(passos)
+
+        self.assist_stack = QtWidgets.QStackedWidget()
+        self.assist_stack.addWidget(self._assistente_passo_periodo())
+        self.assist_stack.addWidget(self._assistente_passo_cenas())
+        self.assist_stack.addWidget(self._assistente_passo_baixar())
+        layout.addWidget(self.assist_stack, 1)
+
+        self._assist_timer_tabela = QtCore.QTimer(self)
+        self._assist_timer_tabela.setSingleShot(True)
+        self._assist_timer_tabela.setInterval(200)
+        self._assist_timer_tabela.timeout.connect(self._assistente_renderizar_tabela)
+        self._assistente_ir_para(0)
+        return pagina
+
+    def _assistente_passo_periodo(self) -> QtWidgets.QWidget:
+        cartao = Cartao(
+            "Região e período",
+            "Confira a região e escolha o período. Nada é baixado nesta etapa.",
+        )
+        self.assist_regiao = QtWidgets.QLabel()
+        self.assist_regiao.setWordWrap(True)
+        alterar = botao("Alterar região no mapa")
+        alterar.clicked.connect(lambda: self._navegar(self._indice_pagina("Área e período")))
+        linha_regiao = QtWidgets.QHBoxLayout()
+        linha_regiao.addWidget(self.assist_regiao, 1)
+        linha_regiao.addWidget(alterar)
+        cartao.layout_principal.addLayout(linha_regiao)
+
+        self.assist_preset = QtWidgets.QComboBox()
+        for texto, chave in (
+            ("Escolher datas", ""),
+            ("Últimos 30 dias", "30"),
+            ("Últimos 90 dias", "90"),
+            ("Safra de verão (setembro a abril)", "safra"),
+        ):
+            self.assist_preset.addItem(texto, chave)
+        self.assist_preset.currentIndexChanged.connect(self._assistente_aplicar_preset)
+        self.assist_inicio = QtWidgets.QDateEdit(self.inicio.date())
+        self.assist_fim = QtWidgets.QDateEdit(self.fim.date())
+        for campo, original in ((self.assist_inicio, self.inicio), (self.assist_fim, self.fim)):
+            campo.setCalendarPopup(True)
+            campo.setDisplayFormat("dd/MM/yyyy")
+            # Mantém as datas do assistente e da página de área sempre iguais.
+            campo.dateChanged.connect(original.setDate)
+            original.dateChanged.connect(campo.setDate)
+            original.dateChanged.connect(lambda _data: self._assistente_atualizar_regiao())
+        form = QtWidgets.QFormLayout()
+        form.addRow("Período rápido", self.assist_preset)
+        form.addRow("De", self.assist_inicio)
+        form.addRow("Até", self.assist_fim)
+        cartao.layout_principal.addLayout(form)
+        cartao.layout_principal.addStretch()
+
+        self.assist_buscar = botao("Buscar imagens disponíveis", "primaryButton")
+        self.assist_buscar.clicked.connect(self._assistente_buscar)
+        cartao.layout_principal.addWidget(self.assist_buscar, 0, QtCore.Qt.AlignmentFlag.AlignRight)
+        self._assistente_atualizar_regiao()
+        return cartao
+
+    def _assistente_passo_cenas(self) -> QtWidgets.QWidget:
+        cartao = Cartao(
+            "Escolher cenas",
+            "Marque as cenas que deseja baixar. Clique em uma linha para visualizá-la.",
+        )
+        filtros = QtWidgets.QHBoxLayout()
+        self.assist_nuvem_max = QtWidgets.QSpinBox()
+        self.assist_nuvem_max.setRange(0, 100)
+        self.assist_nuvem_max.setValue(100)
+        self.assist_nuvem_max.setSuffix(" %")
+        self.assist_nuvem_max.valueChanged.connect(self._assistente_renderizar_tabela)
+        self.assist_ocultar_baixadas = QtWidgets.QCheckBox("Ocultar cenas já baixadas")
+        self.assist_ocultar_baixadas.toggled.connect(self._assistente_renderizar_tabela)
+        self.assist_contagem = QtWidgets.QLabel("")
+        self.assist_contagem.setObjectName("cardHelp")
+        filtros.addWidget(QtWidgets.QLabel("Nuvens até"))
+        filtros.addWidget(self.assist_nuvem_max)
+        filtros.addWidget(self.assist_ocultar_baixadas)
+        filtros.addStretch()
+        filtros.addWidget(self.assist_contagem)
+        cartao.layout_principal.addLayout(filtros)
+
+        divisor = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        self.assist_tabela = QtWidgets.QTableWidget(0, 6)
+        self.assist_tabela.setHorizontalHeaderLabels(
+            ["Baixar", "Data", "Cena", "Nuvens*", "Tamanho", "Situação"]
+        )
+        self.assist_tabela.horizontalHeader().setStretchLastSection(True)
+        self.assist_tabela.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.assist_tabela.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.assist_tabela.itemChanged.connect(self._assistente_item_alterado)
+        self.assist_tabela.currentCellChanged.connect(
+            lambda linha, *_: self._assistente_visualizar(linha)
+        )
+        divisor.addWidget(self.assist_tabela)
+        self.assist_preview = QtWidgets.QLabel("Selecione uma cena para visualizar")
+        self.assist_preview.setObjectName("previewImage")
+        self.assist_preview.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.assist_preview.setMinimumWidth(260)
+        self.assist_preview.setWordWrap(True)
+        divisor.addWidget(self.assist_preview)
+        divisor.setSizes([700, 320])
+        cartao.layout_principal.addWidget(divisor, 1)
+
+        nota = QtWidgets.QLabel(
+            "* Nuvens segundo os metadados do catálogo, quando informadas. Durante o "
+            "download, a camada de qualidade (SCL) é avaliada e pode descartar a cena."
+        )
+        nota.setObjectName("cardHelp")
+        nota.setWordWrap(True)
+        cartao.layout_principal.addWidget(nota)
+
+        acoes = QtWidgets.QHBoxLayout()
+        voltar = botao("Voltar")
+        voltar.clicked.connect(lambda: self._assistente_ir_para(0))
+        todas = botao("Marcar todas")
+        todas.clicked.connect(lambda: self._assistente_marcar_todas(True))
+        nenhuma = botao("Desmarcar todas")
+        nenhuma.clicked.connect(lambda: self._assistente_marcar_todas(False))
+        avancadas = botao("Opções avançadas")
+        avancadas.setToolTip("Bandas, filtros de qualidade e geração de dataset")
+        avancadas.clicked.connect(lambda: self._navegar(self._indice_pagina("Dados e qualidade")))
+        self.assist_revisar = botao("Revisar download", "primaryButton")
+        self.assist_revisar.clicked.connect(self._assistente_revisar)
+        for item in (voltar, todas, nenhuma, avancadas):
+            acoes.addWidget(item)
+        acoes.addStretch()
+        acoes.addWidget(self.assist_revisar)
+        cartao.layout_principal.addLayout(acoes)
+        return cartao
+
+    def _assistente_passo_baixar(self) -> QtWidgets.QWidget:
+        cartao = Cartao(
+            "Baixar",
+            "Revise e inicie. Você pode cancelar a qualquer momento; o que foi "
+            "interrompido é retomado na próxima vez.",
+        )
+        self.assist_resumo = QtWidgets.QLabel("")
+        self.assist_resumo.setWordWrap(True)
+        self.assist_estimativa = QtWidgets.QLabel("")
+        self.assist_estimativa.setObjectName("cardHelp")
+        self.assist_estimativa.setWordWrap(True)
+        cartao.layout_principal.addWidget(self.assist_resumo)
+        cartao.layout_principal.addWidget(self.assist_estimativa)
+
+        cartao.layout_principal.addWidget(QtWidgets.QLabel("Progresso geral (cenas)"))
+        self.assist_progresso_geral = QtWidgets.QProgressBar()
+        self.assist_progresso_geral.setRange(0, 100)
+        self.assist_progresso_geral.setTextVisible(False)
+        cartao.layout_principal.addWidget(self.assist_progresso_geral)
+        cartao.layout_principal.addWidget(QtWidgets.QLabel("Arquivo atual"))
+        self.assist_progresso_arquivo = QtWidgets.QProgressBar()
+        self.assist_progresso_arquivo.setRange(0, 100)
+        self.assist_progresso_arquivo.setTextVisible(False)
+        cartao.layout_principal.addWidget(self.assist_progresso_arquivo)
+        self.assist_mensagem = QtWidgets.QLabel("Pronto para iniciar.")
+        self.assist_mensagem.setWordWrap(True)
+        cartao.layout_principal.addWidget(self.assist_mensagem)
+
+        self.assist_legados = QtWidgets.QLabel("")
+        self.assist_legados.setObjectName("cardHelp")
+        self.assist_legados.setWordWrap(True)
+        self.assist_limpar_legados = botao("Remover temporários antigos")
+        self.assist_limpar_legados.clicked.connect(self._assistente_limpar_legados)
+        linha_legados = QtWidgets.QHBoxLayout()
+        linha_legados.addWidget(self.assist_legados, 1)
+        linha_legados.addWidget(self.assist_limpar_legados)
+        cartao.layout_principal.addLayout(linha_legados)
+        cartao.layout_principal.addStretch()
+
+        acoes = QtWidgets.QHBoxLayout()
+        voltar = botao("Voltar")
+        voltar.clicked.connect(lambda: self._assistente_ir_para(1))
+        self.assist_cancelar = botao("Cancelar download", "dangerButton")
+        self.assist_cancelar.setEnabled(False)
+        self.assist_cancelar.clicked.connect(self._assistente_cancelar)
+        self.assist_iniciar = botao("Iniciar download", "primaryButton")
+        self.assist_iniciar.clicked.connect(self._assistente_iniciar)
+        acoes.addWidget(voltar)
+        acoes.addStretch()
+        acoes.addWidget(self.assist_cancelar)
+        acoes.addWidget(self.assist_iniciar)
+        cartao.layout_principal.addLayout(acoes)
+        return cartao
+
+    # ------------------------------------------------------------ Assistente: navegação
+
+    def _assistente_ir_para(self, passo: int) -> None:
+        self.assist_stack.setCurrentIndex(passo)
+        for indice, rotulo in enumerate(self.assist_rotulos_passos):
+            nome = "stepLabelActive" if indice == passo else (
+                "stepLabelDone" if indice < passo else "stepLabel"
+            )
+            rotulo.setObjectName(nome)
+            rotulo.style().unpolish(rotulo)
+            rotulo.style().polish(rotulo)
+        if passo == 0:
+            self._assistente_atualizar_regiao()
+
+    def _assistente_atualizar_regiao(self) -> None:
+        if not hasattr(self, "assist_regiao"):
+            return
+        oeste, sul, leste, norte = self._bbox_atual()
+        self.assist_regiao.setText(
+            f"<b>{self.nome_regiao.text() or 'Região sem nome'}</b> "
+            f"({self.uf.text() or '—'})<br>Área: oeste {oeste:.3f}°, sul {sul:.3f}°, "
+            f"leste {leste:.3f}°, norte {norte:.3f}°"
+        )
+
+    def _assistente_aplicar_preset(self) -> None:
+        chave = self.assist_preset.currentData()
+        hoje = QtCore.QDate.currentDate()
+        if chave in {"30", "90"}:
+            self.assist_inicio.setDate(hoje.addDays(-int(chave)))
+            self.assist_fim.setDate(hoje)
+        elif chave == "safra":
+            ano = hoje.year() if hoje.month() >= 9 else hoje.year() - 1
+            self.assist_inicio.setDate(QtCore.QDate(ano, 9, 1))
+            self.assist_fim.setDate(QtCore.QDate(ano + 1, 4, 30))
+
+    def _assistente_config(self) -> ConfiguracaoProjeto | None:
+        caminho = self._salvar_configuracao(avisar=False)
+        if caminho is None:
+            return None
+        try:
+            return ConfiguracaoProjeto.carregar(Path(caminho), raiz=ROOT)
+        except (OSError, TypeError, ValueError, KeyError) as erro:
+            QtWidgets.QMessageBox.warning(self, "Configuração inválida", str(erro))
+            return None
+
+    def _assistente_ocupado(self) -> bool:
+        if self.processo.state() != QtCore.QProcess.ProcessState.NotRunning:
+            QtWidgets.QMessageBox.information(
+                self, "Operação em andamento", "Aguarde a operação atual terminar ou cancele-a."
+            )
+            return True
+        return False
+
+    # ------------------------------------------------------------ Assistente: busca
+
+    def _assistente_buscar(self) -> None:
+        if self._assistente_ocupado():
+            return
+        if self.assist_inicio.date() > self.assist_fim.date():
+            QtWidgets.QMessageBox.warning(
+                self, "Período inválido", "A data inicial deve ser anterior à data final."
+            )
+            return
+        config = self._salvar_configuracao(avisar=False)
+        if config is None:
+            return
+        argumentos = montar_argumentos_operacao(
+            "catalogar",
+            config,
+            inicio=self.assist_inicio.date().toString(QtCore.Qt.DateFormat.ISODate),
+            fim=self.assist_fim.date().toString(QtCore.Qt.DateFormat.ISODate),
+            max_itens=0,
+            progresso_json=True,
+        )
+        self._assist_cenas = []
+        self._assistente_renderizar_tabela()
+        self.assist_contagem.setText("Buscando cenas no catálogo do INPE…")
+        self._assistente_ir_para(1)
+        self._iniciar_processo(argumentos, "assist_busca")
+
+    def _receber_evento_assistente(self, evento: dict) -> None:
+        tipo = evento.get("tipo")
+        if tipo == "cena_encontrada":
+            self._assist_cenas.append(CenaEncontrada.de_evento(evento))
+            self.assist_contagem.setText(f"{len(self._assist_cenas)} cena(s) encontrada(s)…")
+            self._assist_timer_tabela.start()
+            return
+        if tipo not in {"cena", "arquivo"}:
+            return
+        self._assist_estado.aplicar(evento)
+        estado = self._assist_estado
+        self.assist_progresso_geral.setValue(estado.percentual_geral)
+        if estado.total_arquivo:
+            self.assist_progresso_arquivo.setRange(0, 100)
+            self.assist_progresso_arquivo.setValue(estado.percentual_arquivo)
+        elif estado.arquivo:
+            self.assist_progresso_arquivo.setRange(0, 0)
+        self.assist_mensagem.setText(estado.mensagem())
+        if tipo == "cena":
+            for cena in self._assist_cenas:
+                if cena.cena in estado.situacoes:
+                    cena.situacao = estado.situacoes[cena.cena]
+                    cena.baixada = cena.baixada or cena.situacao == "Baixada"
+            self._assist_timer_tabela.start()
+
+    def _assistente_renderizar_tabela(self) -> None:
+        if not hasattr(self, "assist_tabela"):
+            return
+        visiveis = filtrar_cenas(
+            self._assist_cenas,
+            None if self.assist_nuvem_max.value() >= 100 else float(self.assist_nuvem_max.value()),
+            self.assist_ocultar_baixadas.isChecked(),
+        )
+        self._assist_visiveis = visiveis
+        tabela = self.assist_tabela
+        tabela.blockSignals(True)
+        tabela.setRowCount(len(visiveis))
+        for linha, cena in enumerate(visiveis):
+            marcar = QtWidgets.QTableWidgetItem()
+            marcar.setFlags(
+                QtCore.Qt.ItemFlag.ItemIsUserCheckable | QtCore.Qt.ItemFlag.ItemIsEnabled
+                | QtCore.Qt.ItemFlag.ItemIsSelectable
+            )
+            marcar.setCheckState(
+                QtCore.Qt.CheckState.Checked if cena.selecionada else QtCore.Qt.CheckState.Unchecked
+            )
+            tabela.setItem(linha, 0, marcar)
+            valores = (
+                cena.data,
+                cena.cena,
+                "—" if cena.nuvem_pct is None else f"{cena.nuvem_pct:.0f}%",
+                "—" if cena.tamanho_bytes is None else formatar_bytes(cena.tamanho_bytes),
+                cena.situacao,
+            )
+            for coluna, valor in enumerate(valores, start=1):
+                tabela.setItem(linha, coluna, QtWidgets.QTableWidgetItem(valor))
+        tabela.blockSignals(False)
+        tabela.resizeColumnsToContents()
+        if self.processo.state() == QtCore.QProcess.ProcessState.NotRunning or not (
+            self._operacao_em_execucao == "assist_busca"
+        ):
+            selecionadas = sum(1 for cena in self._assist_cenas if cena.selecionada)
+            ocultas = len(self._assist_cenas) - len(visiveis)
+            self.assist_contagem.setText(
+                f"{len(self._assist_cenas)} cena(s) encontrada(s), {ocultas} oculta(s) pelos "
+                f"filtros, {selecionadas} marcada(s)."
+            )
+
+    def _assistente_item_alterado(self, item: QtWidgets.QTableWidgetItem) -> None:
+        if item.column() != 0:
+            return
+        visiveis = getattr(self, "_assist_visiveis", [])
+        if 0 <= item.row() < len(visiveis):
+            visiveis[item.row()].selecionada = item.checkState() == QtCore.Qt.CheckState.Checked
+            self._assistente_renderizar_tabela()
+
+    def _assistente_marcar_todas(self, marcar: bool) -> None:
+        for cena in getattr(self, "_assist_visiveis", []):
+            cena.selecionada = marcar
+        self._assistente_renderizar_tabela()
+
+    def _assistente_visualizar(self, linha: int) -> None:
+        visiveis = getattr(self, "_assist_visiveis", [])
+        if not 0 <= linha < len(visiveis):
+            return
+        cena = visiveis[linha]
+        if self._assist_resposta_miniatura is not None:
+            self._assist_resposta_miniatura.abort()
+            self._assist_resposta_miniatura = None
+        if cena.preview_local:
+            caminho = (ROOT / cena.preview_local).resolve()
+            try:
+                caminho.relative_to(ROOT.resolve())
+            except ValueError:
+                caminho = Path()
+            pixmap = QtGui.QPixmap(str(caminho)) if caminho.is_file() else QtGui.QPixmap()
+            if not pixmap.isNull():
+                self._assistente_mostrar_pixmap(pixmap, f"{cena.data} • prévia local")
+                return
+        url = QtCore.QUrl(cena.miniatura)
+        host_stac = QtCore.QUrl(self.stac_url.text().strip()).host()
+        if cena.miniatura and url.scheme() == "https" and url.host() == host_stac:
+            self.assist_preview.setText("Carregando miniatura…")
+            requisicao = QtNetwork.QNetworkRequest(url)
+            requisicao.setTransferTimeout(15000)
+            resposta = self._assist_rede.get(requisicao)
+            self._assist_resposta_miniatura = resposta
+            resposta.finished.connect(lambda r=resposta, c=cena: self._assistente_miniatura(r, c))
+            return
+        self.assist_preview.setText(
+            f"{cena.data}\n{cena.cena}\n\nSem visualização disponível antes do download."
+        )
+
+    def _assistente_miniatura(self, resposta: QtNetwork.QNetworkReply, cena: CenaEncontrada) -> None:
+        if resposta is not self._assist_resposta_miniatura:
+            resposta.deleteLater()
+            return
+        self._assist_resposta_miniatura = None
+        dados = (
+            bytes(resposta.read(5 * 1024 * 1024))
+            if resposta.error() == QtNetwork.QNetworkReply.NetworkError.NoError
+            else b""
+        )
+        resposta.deleteLater()
+        pixmap = QtGui.QPixmap()
+        if dados and pixmap.loadFromData(dados):
+            self._assistente_mostrar_pixmap(pixmap, f"{cena.data} • miniatura do catálogo")
+        else:
+            self.assist_preview.setText(f"{cena.data}\nMiniatura indisponível.")
+
+    def _assistente_mostrar_pixmap(self, pixmap: QtGui.QPixmap, legenda: str) -> None:
+        self.assist_preview.setPixmap(
+            pixmap.scaled(
+                self.assist_preview.size() - QtCore.QSize(16, 16),
+                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                QtCore.Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+        self.assist_preview.setToolTip(legenda)
+
+    # ------------------------------------------------------------ Assistente: download
+
+    def _assistente_selecionadas(self) -> list[CenaEncontrada]:
+        return [cena for cena in self._assist_cenas if cena.selecionada]
+
+    def _assistente_revisar(self) -> None:
+        selecionadas = self._assistente_selecionadas()
+        if not selecionadas:
+            QtWidgets.QMessageBox.information(
+                self, "Nenhuma cena marcada", "Marque ao menos uma cena para baixar."
+            )
+            return
+        datas = sorted({cena.data for cena in selecionadas})
+        ja = sum(1 for cena in selecionadas if cena.baixada)
+        self.assist_resumo.setText(
+            f"<b>{len(selecionadas)} cena(s)</b> de {self.nome_regiao.text() or 'região sem nome'}, "
+            f"datas de {datas[0]} a {datas[-1]}. "
+            + (f"{ja} já está(ão) no computador e será(ão) apenas conferida(s). " if ja else "")
+            + f"Bandas: {', '.join(self._coletar_dados().get('bandas', [])) or 'nenhuma'}."
+        )
+        config = self._assistente_config()
+        media, amostras = (0, 0)
+        if config is not None:
+            media, amostras = media_tamanho_cena_local(config.caminho(config.download.pasta))
+        self.assist_estimativa.setText(estimar_tamanho(selecionadas, media, amostras))
+        self.assist_mensagem.setText("Pronto para iniciar.")
+        self.assist_progresso_geral.setValue(0)
+        self.assist_progresso_arquivo.setRange(0, 100)
+        self.assist_progresso_arquivo.setValue(0)
+        self._assistente_atualizar_legados(config)
+        self._assistente_ir_para(2)
+
+    def _assistente_iniciar(self) -> None:
+        if self._assistente_ocupado():
+            return
+        selecionadas = self._assistente_selecionadas()
+        if not selecionadas:
+            self._assistente_ir_para(1)
+            return
+        config = self._salvar_configuracao(avisar=False)
+        if config is None:
+            return
+        try:
+            argumentos = montar_argumentos_operacao(
+                "baixar",
+                config,
+                inicio=self.assist_inicio.date().toString(QtCore.Qt.DateFormat.ISODate),
+                fim=self.assist_fim.date().toString(QtCore.Qt.DateFormat.ISODate),
+                max_itens=0,
+                cenas=[cena.cena for cena in selecionadas],
+                progresso_json=True,
+            )
+        except ValueError as erro:
+            QtWidgets.QMessageBox.warning(self, "Não foi possível baixar", str(erro))
+            return
+        self._assist_estado = EstadoDownload(total_cenas=len(selecionadas))
+        self._assist_cancelado = False
+        self.assist_mensagem.setText("Preparando o download…")
+        self._iniciar_processo(argumentos, "assist_download")
+
+    def _assistente_cancelar(self) -> None:
+        if self.processo.state() == QtCore.QProcess.ProcessState.NotRunning:
+            return
+        self._assist_cancelado = True
+        self.assist_mensagem.setText("Cancelando com segurança…")
+        self._cancelar()
+
+    def _assistente_processo_finalizado(self, codigo: int) -> None:
+        if not hasattr(self, "assist_stack"):
+            return
+        if self._operacao_em_execucao == "assist_busca":
+            self._assistente_renderizar_tabela()
+            if codigo != 0 and not self._assist_cenas:
+                self.assist_contagem.setText(
+                    "A busca falhou. Verifique a conexão e o registro em Operações."
+                )
+            elif not self._assist_cenas:
+                self.assist_contagem.setText(
+                    "Nenhuma cena encontrada. Tente um período maior ou outra região."
+                )
+        elif self._operacao_em_execucao == "assist_download":
+            self.assist_mensagem.setText(
+                self._assist_estado.resumo_final(codigo, self._assist_cancelado)
+            )
+            self.assist_progresso_arquivo.setRange(0, 100)
+            self._assistente_renderizar_tabela()
+            self._assistente_atualizar_legados(None)
+
+    def _assistente_atualizar_legados(self, config: ConfiguracaoProjeto | None) -> None:
+        if config is None:
+            try:
+                config = self._config_painel()
+            except (OSError, TypeError, ValueError, KeyError, yaml.YAMLError):
+                config = None
+        legados = (
+            listar_parciais_legados(config.caminho(config.download.pasta)) if config else []
+        )
+        self._assist_pasta_download = config.caminho(config.download.pasta) if config else None
+        if legados:
+            tamanho = sum(caminho.stat().st_size for caminho in legados if caminho.is_file())
+            self.assist_legados.setText(
+                f"{len(legados)} arquivo(s) temporário(s) de versões anteriores "
+                f"({formatar_bytes(tamanho)}) não podem ser retomados."
+            )
+        else:
+            self.assist_legados.setText("")
+        self.assist_limpar_legados.setVisible(bool(legados))
+
+    def _assistente_limpar_legados(self) -> None:
+        pasta = getattr(self, "_assist_pasta_download", None)
+        if pasta is None or self._assistente_ocupado():
+            return
+        legados = listar_parciais_legados(pasta)
+        if not legados:
+            return
+        resposta = QtWidgets.QMessageBox.question(
+            self,
+            "Remover temporários antigos",
+            f"Remover {len(legados)} arquivo(s) temporário(s) incompleto(s)? "
+            "Imagens completas não são afetadas.",
+        )
+        if resposta != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        removidos, liberados = remover_parciais_legados(pasta)
+        self.assist_legados.setText(
+            f"{removidos} arquivo(s) removido(s); {formatar_bytes(liberados)} liberados."
+        )
+        self.assist_limpar_legados.setVisible(False)
+        self._atualizar_painel()
 
     def _pagina_dados(self) -> QtWidgets.QWidget:
         pagina = QtWidgets.QWidget()
@@ -981,36 +2027,136 @@ class MainWindow(QtWidgets.QMainWindow):
         pagina = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(pagina)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setSpacing(12)
 
-        resumo = Cartao(
-            "Análise da região",
-            "As contagens vêm de caixas detectadas; caixas não equivalem à área real dos talhões.",
-        )
-        resumo.layout_principal.addWidget(self.analise_info)
-        resumo.layout_principal.addWidget(self.analise_tabela)
-        layout.addWidget(resumo, 1)
-
-        imagens = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        original = Cartao("Imagem RGB original")
-        original.layout_principal.addWidget(self.analise_original, 1)
-        analisada = Cartao("Imagem com detecções")
-        analisada.layout_principal.addWidget(self.analise_anotada, 1)
-        imagens.addWidget(original)
-        imagens.addWidget(analisada)
-        layout.addWidget(imagens, 2)
-        linha_relatorio = QtWidgets.QHBoxLayout()
+        resumo = Cartao("Resultado da análise")
+        topo = QtWidgets.QHBoxLayout()
+        topo.addWidget(self.analise_info, 1)
+        botoes = QtWidgets.QVBoxLayout()
+        self.btn_exportar_csv = botao("Exportar CSV")
+        self.btn_exportar_csv.setToolTip("Uma linha por detecção, com caixas em pixels")
+        self.btn_exportar_csv.clicked.connect(lambda: self._exportar_resultado("csv"))
+        self.btn_exportar_json = botao("Exportar JSON")
+        self.btn_exportar_json.clicked.connect(lambda: self._exportar_resultado("json"))
         self.btn_relatorio = botao("Abrir relatório PDF", "primaryButton")
-        self.btn_relatorio.setEnabled(False)
         self.btn_relatorio.clicked.connect(self._abrir_relatorio_analise)
         self.btn_salvar_relatorio = botao("Salvar PDF")
-        self.btn_salvar_relatorio.setEnabled(False)
         self.btn_salvar_relatorio.clicked.connect(self._salvar_relatorio_analise)
-        linha_relatorio.addStretch()
-        linha_relatorio.addWidget(self.btn_salvar_relatorio)
-        linha_relatorio.addWidget(self.btn_relatorio)
-        layout.addLayout(linha_relatorio)
+        for item in (
+            self.btn_relatorio, self.btn_salvar_relatorio, self.btn_exportar_csv, self.btn_exportar_json
+        ):
+            item.setEnabled(False)
+            botoes.addWidget(item)
+        topo.addLayout(botoes)
+        resumo.layout_principal.addLayout(topo)
+        layout.addWidget(resumo)
+
+        self.analise_abas = QtWidgets.QTabWidget()
+        self.analise_abas.addTab(self._aba_talhoes(), "Talhões (detecção)")
+        self.analise_abas.addTab(self._aba_culturas(), "Culturas (classificação)")
+        layout.addWidget(self.analise_abas, 1)
         return pagina
+
+    def _aba_talhoes(self) -> QtWidgets.QWidget:
+        aba = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(aba)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        esquerda = QtWidgets.QVBoxLayout()
+        rotulo = QtWidgets.QLabel("Recortes analisados")
+        rotulo.setObjectName("cardTitle")
+        esquerda.addWidget(rotulo)
+        self.analise_itens = QtWidgets.QListWidget()
+        self.analise_itens.currentRowChanged.connect(self._exibir_item_resultado)
+        esquerda.addWidget(self.analise_itens, 2)
+        rotulo_classes = QtWidgets.QLabel("Resumo por classe")
+        rotulo_classes.setObjectName("cardTitle")
+        esquerda.addWidget(rotulo_classes)
+        esquerda.addWidget(self.analise_tabela, 1)
+        aviso = QtWidgets.QLabel(AVISO_AREA)
+        aviso.setObjectName("cardHelp")
+        aviso.setWordWrap(True)
+        esquerda.addWidget(aviso)
+        self.analise_aviso_modelo = QtWidgets.QLabel("")
+        self.analise_aviso_modelo.setWordWrap(True)
+        self.analise_aviso_modelo.setStyleSheet(f"color: {CORES['perigo_texto']};")
+        esquerda.addWidget(self.analise_aviso_modelo)
+        painel_esquerdo = QtWidgets.QWidget()
+        painel_esquerdo.setLayout(esquerda)
+
+        direita = QtWidgets.QVBoxLayout()
+        imagens = QtWidgets.QHBoxLayout()
+        for titulo, rotulo_imagem in (
+            ("Imagem RGB original", self.analise_original),
+            ("Resultado da IA sobreposto", self.analise_anotada),
+        ):
+            coluna = QtWidgets.QVBoxLayout()
+            legenda = QtWidgets.QLabel(titulo)
+            legenda.setObjectName("cardHelp")
+            coluna.addWidget(legenda)
+            # A imagem não dita o tamanho do layout; ela é ajustada ao espaço disponível.
+            rotulo_imagem.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Fixed
+            )
+            rotulo_imagem.setMinimumHeight(0)
+            rotulo_imagem.setFixedHeight(ALTURA_IMAGEM_RESULTADO)
+            coluna.addWidget(rotulo_imagem)
+            imagens.addLayout(coluna)
+        direita.addLayout(imagens)
+        self.analise_item_info = QtWidgets.QLabel("")
+        self.analise_item_info.setWordWrap(True)
+        direita.addWidget(self.analise_item_info)
+        self.analise_deteccoes = QtWidgets.QTableWidget(0, 3)
+        self.analise_deteccoes.setHorizontalHeaderLabels(
+            ["Classe do modelo", "Confiança", "Caixa (pixels x1, y1, x2, y2)"]
+        )
+        self.analise_deteccoes.horizontalHeader().setStretchLastSection(True)
+        self.analise_deteccoes.horizontalHeader().setSectionResizeMode(
+            0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.analise_deteccoes.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.analise_deteccoes.setMinimumHeight(140)
+        direita.addWidget(self.analise_deteccoes, 2)
+        self.analise_vegetacao = QtWidgets.QLabel("")
+        self.analise_vegetacao.setObjectName("cardHelp")
+        self.analise_vegetacao.setWordWrap(True)
+        direita.addWidget(self.analise_vegetacao)
+        conteudo_direito = QtWidgets.QWidget()
+        conteudo_direito.setLayout(direita)
+        # Rolagem evita sobreposição quando a janela é baixa.
+        painel_direito = QtWidgets.QScrollArea()
+        painel_direito.setWidgetResizable(True)
+        painel_direito.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        painel_direito.setWidget(conteudo_direito)
+
+        divisor = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        divisor.addWidget(painel_esquerdo)
+        divisor.addWidget(painel_direito)
+        divisor.setSizes([360, 820])
+        layout.addWidget(divisor)
+        return aba
+
+    def _aba_culturas(self) -> QtWidgets.QWidget:
+        aba = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(aba)
+        layout.setContentsMargins(16, 16, 16, 16)
+        self.analise_cultura_estado = QtWidgets.QLabel("Cultura não determinada")
+        self.analise_cultura_estado.setObjectName("statValue")
+        self.analise_cultura_texto = QtWidgets.QLabel(AVISO_CULTURA.split(". ", 1)[-1])
+        self.analise_cultura_texto.setWordWrap(True)
+        explicacao = QtWidgets.QLabel(
+            "Detecção de talhões responde onde há talhões na imagem. Classificação de "
+            "culturas responde qual cultura ocupa cada talhão e exige outro modelo, "
+            "treinado e avaliado em regiões e safras independentes. Quando um modelo de "
+            "classificação for aprovado no Laboratório de IA, os resultados aparecerão aqui."
+        )
+        explicacao.setObjectName("cardHelp")
+        explicacao.setWordWrap(True)
+        layout.addWidget(self.analise_cultura_estado)
+        layout.addWidget(self.analise_cultura_texto)
+        layout.addWidget(explicacao)
+        layout.addStretch()
+        return aba
 
     def _pagina_historico(self) -> QtWidgets.QWidget:
         pagina = QtWidgets.QWidget()
@@ -1020,10 +2166,28 @@ class MainWindow(QtWidgets.QMainWindow):
             "Histórico local",
             "O banco guarda somente metadados e caminhos; GeoTIFFs permanecem fora do SQLite.",
         )
+        filtros = QtWidgets.QHBoxLayout()
+        self.historico_filtro = QtWidgets.QLineEdit()
+        self.historico_filtro.setPlaceholderText("Filtrar por região, cena, modelo ou ID")
+        self.historico_filtro.setClearButtonEnabled(True)
+        self.historico_filtro.textChanged.connect(self._aplicar_filtro_historico)
+        self.historico_periodo = QtWidgets.QComboBox()
+        for texto, dias in (("Todas as datas", 0), ("Últimos 30 dias", 30), ("Últimos 12 meses", 365)):
+            self.historico_periodo.addItem(texto, dias)
+        self.historico_periodo.currentIndexChanged.connect(self._aplicar_filtro_historico)
+        filtros.addWidget(self.historico_filtro, 1)
+        filtros.addWidget(self.historico_periodo)
+        cartao.layout_principal.addLayout(filtros)
         cartao.layout_principal.addWidget(self.historico_tabela, 1)
+        acoes = QtWidgets.QHBoxLayout()
         atualizar = botao("Atualizar histórico")
         atualizar.clicked.connect(self._recarregar_historico)
-        cartao.layout_principal.addWidget(atualizar)
+        self.btn_abrir_historico = botao("Abrir resultado", "primaryButton")
+        self.btn_abrir_historico.clicked.connect(self._abrir_resultado_historico)
+        acoes.addWidget(atualizar)
+        acoes.addStretch()
+        acoes.addWidget(self.btn_abrir_historico)
+        cartao.layout_principal.addLayout(acoes)
         layout.addWidget(cartao)
         return pagina
 
@@ -1078,7 +2242,7 @@ class MainWindow(QtWidgets.QMainWindow):
         texto_inicio = QtWidgets.QLabel(
             "• Em Área e período, segure Shift e arraste no mapa para desenhar a região.\n"
             "• Em Dados e qualidade, marque as bandas e revise o filtro de nuvens.\n"
-            "• Em Visão geral, escolha a operação e clique em Executar operação.\n"
+            "• Em Início, veja o próximo passo; em Operações, escolha a operação e clique em Executar operação.\n"
             "• Acompanhe mensagens e arquivos na Saída da operação."
         )
         texto_inicio.setWordWrap(True)
@@ -1129,6 +2293,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _conectar_eventos(self) -> None:
         self.mapa.areaSelecionada.connect(self._receber_bbox)
+        self.mapa.desenhoConcluido.connect(self._desenho_concluido)
         self.operacao.currentIndexChanged.connect(self._atualizar_operacao)
         self.btn_salvar.clicked.connect(self._salvar_configuracao)
         self.btn_executar.clicked.connect(self._executar)
@@ -1137,13 +2302,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _navegar(self, indice: int) -> None:
         self.stack.setCurrentIndex(indice)
+        # Mantém o menu lateral coerente quando a navegação parte de um botão da página.
+        self.botoes_navegacao[indice].setChecked(True)
         self.titulo_pagina.setText(self.PAGINAS[indice][0])
         self.subtitulo_pagina.setText(self.PAGINAS[indice][1])
-        if indice == 1:
+        titulo = self.PAGINAS[indice][0]
+        if titulo == "Área e período":
             QtCore.QTimer.singleShot(0, self.mapa.reativar)
             QtCore.QTimer.singleShot(200, self.mapa.reativar)
-        elif indice == 5:
+        elif titulo == "Histórico":
             self._recarregar_historico()
+        elif titulo == "Início":
+            self._atualizar_painel()
 
     def _atualizar_operacao(self) -> None:
         operacao = self.operacao.currentData()
@@ -1276,11 +2446,14 @@ class MainWindow(QtWidgets.QMainWindow):
         except (FileNotFoundError, TypeError, ValueError) as erro:
             QtWidgets.QMessageBox.warning(self, "Não foi possível executar", str(erro))
             return
+        self._iniciar_processo(argumentos, str(self.operacao.currentData()))
 
+    def _iniciar_processo(self, argumentos: list[str], operacao: str) -> None:
+        """Inicia a CLI oficial; usado por Operações e pelo assistente de download."""
         self.log.clear()
         self._saida_pendente = ""
         self._resultado_pendente = None
-        self._operacao_em_execucao = str(self.operacao.currentData())
+        self._operacao_em_execucao = operacao
         programa, argumentos_processo, diretorio = comando_cli_empacotado(argumentos)
         self.log.appendPlainText(
             f"$ {shlex.join([programa, *argumentos_processo])}\n"
@@ -1291,20 +2464,41 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _ler_saida(self) -> None:
         texto = bytes(self.processo.readAllStandardOutput()).decode("utf-8", errors="replace")
-        if texto:
-            cursor = self.log.textCursor()
-            cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
-            cursor.insertText(texto)
-            self.log.setTextCursor(cursor)
-            self.log.ensureCursorVisible()
-            self._saida_pendente += texto
-            while "\n" in self._saida_pendente:
-                linha, self._saida_pendente = self._saida_pendente.split("\n", 1)
-                self._processar_linha_resultado(linha)
+        if not texto:
+            return
+        self._saida_pendente += texto
+        visiveis: list[str] = []
+        while "\n" in self._saida_pendente:
+            linha, self._saida_pendente = self._saida_pendente.split("\n", 1)
+            if not self._consumir_linha(linha):
+                visiveis.append(linha)
+        # Linhas parciais sem quebra (por exemplo, barras de progresso) também aparecem.
+        if self._saida_pendente and not self._saida_pendente.startswith("[PROGRESSO]"):
+            visiveis.append(self._saida_pendente)
+            self._saida_pendente = ""
+        if visiveis:
+            self._anexar_log("\n".join(visiveis) + ("\n" if not self._saida_pendente else ""))
+
+    def _anexar_log(self, texto: str) -> None:
+        cursor = self.log.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
+        cursor.insertText(texto)
+        self.log.setTextCursor(cursor)
+        self.log.ensureCursorVisible()
+
+    def _consumir_linha(self, linha: str) -> bool:
+        """Trata eventos estruturados; retorna True quando a linha não vai ao log."""
+        evento = ler_evento(linha.rstrip("\r"))
+        if evento is not None:
+            self._receber_evento_assistente(evento)
+            return True
+        self._processar_linha_resultado(linha)
+        return False
 
     def _processo_finalizado(self, codigo: int, _status) -> None:
         if self._saida_pendente:
-            self._processar_linha_resultado(self._saida_pendente)
+            if not self._consumir_linha(self._saida_pendente):
+                self._anexar_log(self._saida_pendente)
             self._saida_pendente = ""
         if codigo == 0 and self._resultado_pendente is not None:
             try:
@@ -1316,6 +2510,8 @@ class MainWindow(QtWidgets.QMainWindow):
         mensagem = "Concluído" if codigo == 0 else f"Encerrado com código {codigo}"
         self.log.appendPlainText(f"\n[{mensagem}]")
         self._definir_execucao(False, mensagem)
+        self._assistente_processo_finalizado(codigo)
+        self._atualizar_painel()
 
     def _processar_linha_resultado(self, linha: str) -> None:
         marcador = "[ANALISE_RESULTADO] "
@@ -1327,21 +2523,28 @@ class MainWindow(QtWidgets.QMainWindow):
         self._resultado_pendente = ROOT / caminho
 
     def _carregar_resultado_analise(self, caminho: Path) -> None:
-        _, raiz_analises = self._raizes_artefatos()
+        raiz_dataset, raiz_analises = self._raizes_artefatos()
         caminho = self._resolver_em_raiz(caminho, raiz_analises, {".json"})
-        if caminho.stat().st_size > 10 * 1024 * 1024:
-            raise ValueError("resultado.json excede o limite de 10 MB")
-        dados = json.loads(caminho.read_text(encoding="utf-8"))
-        if not isinstance(dados, dict) or "estatisticas" not in dados:
-            raise ValueError("estrutura JSON inesperada")
+        resultado = carregar_resultado(
+            caminho, raiz_projeto=ROOT, raiz_dataset=raiz_dataset, raiz_analises=raiz_analises
+        )
+        dados = resultado.dados
         self._ultimo_resultado = dados
-        estatisticas = dados["estatisticas"]
-        periodo = f"{dados.get('periodo_inicio', '—')} a {dados.get('periodo_fim', '—')}"
+        self._resultado_visual: ResultadoVisualizacao | None = resultado
+        estatisticas = resultado.estatisticas
+        periodo = f"{resultado.periodo_inicio or '—'} a {resultado.periodo_fim or '—'}"
+        modelo = resultado.modelo_versao or "versão não informada"
+        if resultado.modelo_nome:
+            modelo = f"{resultado.modelo_nome} {modelo}"
+        hash_curto = resultado.modelo_sha256[:12] if resultado.modelo_sha256 else "—"
         self.analise_info.setText(
-            f"Região: {dados.get('regiao', '—')}\nPeríodo: {periodo}\n"
-            f"Cenas: {', '.join(dados.get('scene_ids', [])) or '—'}\n"
-            f"Dispositivo de processamento: {dados.get('dispositivo', '—')}\n"
-            f"Detecções: {estatisticas.get('total_deteccoes', 0)}"
+            f"Região: {resultado.regiao or '—'}\nPeríodo: {periodo}\n"
+            f"Cenas: {', '.join(resultado.cenas) or '—'}\n"
+            f"Modelo: {modelo} (detecção por caixas; SHA-256 {hash_curto}…)\n"
+            f"Dispositivo de processamento: {resultado.dispositivo or '—'}\n"
+            f"Analisado em: {resultado.criado_em or '—'}\n"
+            f"Detecções: {estatisticas.get('total_deteccoes', 0)} em "
+            f"{len(resultado.itens) or estatisticas.get('total_tiles', 0)} recorte(s)"
         )
         por_classe = estatisticas.get("por_classe", {})
         self.analise_tabela.setRowCount(len(por_classe))
@@ -1355,20 +2558,124 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             for coluna, valor in enumerate(valores):
                 self.analise_tabela.setItem(linha, coluna, QtWidgets.QTableWidgetItem(valor))
-        raiz_dataset, raiz_analises = self._raizes_artefatos()
-        self._exibir_imagem_resultado(
-            self.analise_original, dados.get("imagem_original", ""), raiz_dataset
+
+        self.analise_itens.blockSignals(True)
+        self.analise_itens.clear()
+        for item in resultado.itens:
+            texto = f"{item.data or 'sem data'} • {len(item.deteccoes)} detecção(ões) • {item.patch_id[-28:]}"
+            self.analise_itens.addItem(texto)
+        self.analise_itens.blockSignals(False)
+        if resultado.itens:
+            self.analise_itens.setCurrentRow(0)
+            self._exibir_item_resultado(0)
+        else:
+            # Resultados antigos sem lista por recorte: mostra as imagens principais.
+            self._exibir_imagem_resultado(
+                self.analise_original, dados.get("imagem_original", ""), raiz_dataset
+            )
+            self._exibir_imagem_resultado(
+                self.analise_anotada, dados.get("imagem_analisada", ""), raiz_analises
+            )
+            self.analise_deteccoes.setRowCount(0)
+            self.analise_item_info.setText("")
+            self.analise_vegetacao.setText("")
+
+        self.analise_aviso_modelo.setText(aviso_classes_modelo(resultado.modelo_classes))
+        aprovado = modelo_classificacao_aprovado()
+        self.analise_cultura_estado.setText(
+            "Cultura não determinada" if aprovado is None else "Classificação disponível"
         )
-        self._exibir_imagem_resultado(
-            self.analise_anotada, dados.get("imagem_analisada", ""), raiz_analises
-        )
-        relatorio = self._resolver_em_raiz_opcional(
-            dados.get("caminho_relatorio", ""), raiz_analises, {".pdf"}
-        )
+        relatorio = resultado.caminho_relatorio
         self.btn_relatorio.setEnabled(bool(relatorio and relatorio.is_file()))
         self.btn_salvar_relatorio.setEnabled(bool(relatorio and relatorio.is_file()))
-        self._navegar(4)
+        self.btn_exportar_csv.setEnabled(True)
+        self.btn_exportar_json.setEnabled(True)
+        self.analise_abas.setCurrentIndex(0)
+        self._navegar(self._indice_pagina("Análise da região"))
         self._recarregar_historico()
+
+    def _exibir_item_resultado(self, linha: int) -> None:
+        resultado = getattr(self, "_resultado_visual", None)
+        if resultado is None or not 0 <= linha < len(resultado.itens):
+            return
+        item: ItemResultado = resultado.itens[linha]
+        self._mostrar_pixmap_arquivo(self.analise_original, item.imagem_original)
+        self._mostrar_pixmap_arquivo(self.analise_anotada, item.imagem_analisada)
+        nuvens = "—" if item.nuvens_pct is None else f"{item.nuvens_pct:.1f}%"
+        self.analise_item_info.setText(
+            f"<b>Recorte</b> {item.patch_id}<br>Cena {item.cena or '—'} • aquisição "
+            f"{item.data or '—'} • nuvens no recorte {nuvens} • "
+            f"{len(item.deteccoes)} detecção(ões)"
+        )
+        self.analise_deteccoes.setRowCount(len(item.deteccoes))
+        for indice, deteccao in enumerate(item.deteccoes):
+            caixa = ", ".join(f"{valor:.0f}" for valor in deteccao.caixa_px)
+            for coluna, valor in enumerate(
+                (deteccao.classe, self._percentual_confianca(deteccao.confianca), caixa)
+            ):
+                self.analise_deteccoes.setItem(indice, coluna, QtWidgets.QTableWidgetItem(valor))
+        try:
+            indicadores = indicadores_vegetacao(item)
+        except Exception as erro:  # leitura raster nunca deve derrubar a tela
+            indicadores = []
+            self.analise_vegetacao.setText(f"Indicadores de vegetação indisponíveis: {erro}")
+            return
+        if indicadores:
+            partes = [
+                f"{ind.indice} médio {ind.media:.2f} (mín. {ind.minimo:.2f}, máx. "
+                f"{ind.maximo:.2f}; {ind.pixels_validos_pct:.0f}% de pixels válidos)"
+                for ind in indicadores
+            ]
+            self.analise_vegetacao.setText(
+                "Vegetação no recorte inteiro (não por talhão): " + "; ".join(partes) + "."
+            )
+        else:
+            self.analise_vegetacao.setText(
+                "Indicadores de vegetação indisponíveis para este recorte (NDVI/EVI não "
+                "baixados ou escala da coleção não documentada)."
+            )
+
+    @staticmethod
+    def _mostrar_pixmap_arquivo(rotulo: QtWidgets.QLabel, caminho: Path | None) -> None:
+        imagem = QtGui.QPixmap(str(caminho)) if caminho else QtGui.QPixmap()
+        if imagem.isNull():
+            rotulo.setPixmap(QtGui.QPixmap())
+            rotulo.setText("Imagem indisponível")
+            return
+        largura = max(160, min(rotulo.width(), 520))
+        altura = ALTURA_IMAGEM_RESULTADO
+        rotulo.setPixmap(
+            imagem.scaled(
+                largura, altura, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                QtCore.Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
+    def _exportar_resultado(self, formato: str) -> None:
+        resultado = getattr(self, "_resultado_visual", None)
+        if resultado is None:
+            return
+        sugestao = Path.home() / f"{resultado.analysis_id}.{formato}"
+        filtro = "CSV (*.csv)" if formato == "csv" else "JSON (*.json)"
+        destino, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Exportar resultado", str(sugestao), filtro
+        )
+        if not destino:
+            return
+        destino_path = Path(destino)
+        if destino_path.suffix.lower() != f".{formato}":
+            destino_path = destino_path.with_suffix(f".{formato}")
+        try:
+            if formato == "csv":
+                linhas = exportar_csv(resultado, destino_path)
+                mensagem = f"{linhas} detecção(ões) exportada(s) para {destino_path.name}."
+            else:
+                exportar_json(resultado, destino_path)
+                mensagem = f"Resultado exportado para {destino_path.name}."
+        except OSError as erro:
+            QtWidgets.QMessageBox.warning(self, "Não foi possível exportar", str(erro))
+            return
+        self.statusBar().showMessage(mensagem, 6000)
 
     @staticmethod
     def _percentual_confianca(valor: object) -> str:
@@ -1470,18 +2777,26 @@ class MainWindow(QtWidgets.QMainWindow):
             self.statusBar().showMessage(f"Não foi possível salvar o relatório: {erro}", 6000)
 
     def _recarregar_historico(self) -> None:
-        self.historico_tabela.setRowCount(0)
+        self._registros_historico = []
         try:
             config_path = Path(self.output_path.text().strip() or DEFAULT_CONFIG)
-            if not config_path.is_file():
-                return
-            config = ConfiguracaoProjeto.carregar(config_path, raiz=ROOT)
-            banco = config.caminho(config.analise.historico)
-            if not banco.is_file():
-                return
-            registros = RepositorioHistoricoAnalises(banco, ROOT).listar(limite=200)
+            if config_path.is_file():
+                config = ConfiguracaoProjeto.carregar(config_path, raiz=ROOT)
+                banco = config.caminho(config.analise.historico)
+                if banco.is_file():
+                    self._registros_historico = RepositorioHistoricoAnalises(banco, ROOT).listar(
+                        limite=500
+                    )
         except (OSError, TypeError, ValueError):
-            return
+            self._registros_historico = []
+        self._aplicar_filtro_historico()
+
+    def _aplicar_filtro_historico(self) -> None:
+        registros = filtrar_historico(
+            getattr(self, "_registros_historico", []),
+            self.historico_filtro.text() if hasattr(self, "historico_filtro") else "",
+            int(self.historico_periodo.currentData() or 0) if hasattr(self, "historico_periodo") else None,
+        )
         self.historico_tabela.setRowCount(len(registros))
         for linha, registro in enumerate(registros):
             resumo = registro.resumo if isinstance(registro.resumo, dict) else {}
@@ -1494,9 +2809,24 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             for coluna, valor in enumerate(valores):
                 item = QtWidgets.QTableWidgetItem(valor)
+                if coluna == 0:
+                    item.setData(QtCore.Qt.ItemDataRole.UserRole + 1, registro.analysis_id)
                 if coluna == 4:
                     item.setData(QtCore.Qt.ItemDataRole.UserRole, registro.report_path)
                 self.historico_tabela.setItem(linha, coluna, item)
+
+    def _abrir_resultado_historico(self) -> None:
+        linha = self.historico_tabela.currentRow()
+        item = self.historico_tabela.item(linha, 0) if linha >= 0 else None
+        analysis_id = item.data(QtCore.Qt.ItemDataRole.UserRole + 1) if item else None
+        if not analysis_id:
+            self.statusBar().showMessage("Selecione uma análise no histórico.", 4000)
+            return
+        try:
+            _, raiz_analises = self._raizes_artefatos()
+            self._carregar_resultado_analise(raiz_analises / str(analysis_id) / "resultado.json")
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as erro:
+            QtWidgets.QMessageBox.warning(self, "Não foi possível abrir o resultado", str(erro))
 
     def _abrir_relatorio_historico(self, indice: QtCore.QModelIndex) -> None:
         item = self.historico_tabela.item(indice.row(), 4)
@@ -1526,6 +2856,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if not executando:
             self.progresso.setValue(0)
         self.status.setText(mensagem)
+        self._atualizar_tarefa_painel()
+        if hasattr(self, "assist_buscar"):
+            self.assist_buscar.setEnabled(not executando)
+            self.assist_iniciar.setEnabled(not executando)
+            self.assist_cancelar.setEnabled(
+                executando and self._operacao_em_execucao.startswith("assist_")
+            )
 
     def _cancelar(self) -> None:
         if self.processo.state() == QtCore.QProcess.ProcessState.NotRunning:
@@ -1540,7 +2877,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _receber_bbox(self, bbox: object) -> None:
         if not isinstance(bbox, list):
-            self.statusBar().showMessage("Desenhe uma área com Shift + arraste no mapa.", 5000)
+            self.statusBar().showMessage(
+                "Desenhe uma área com \"Desenhar área\" ou Shift + arraste no mapa.", 5000
+            )
             return
         try:
             oeste, sul, leste, norte = normalizar_bbox(bbox)
@@ -1557,11 +2896,12 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             item_id = self.store.salvar(self._coletar_dados())
             self._recarregar_perfis()
-            self.statusBar().showMessage(f"Perfil local #{item_id} salvo.", 5000)
+            self.statusBar().showMessage(f"Região favorita #{item_id} salva.", 5000)
         except Exception as erro:
             QtWidgets.QMessageBox.critical(self, "Erro ao salvar perfil", str(erro))
 
     def _recarregar_perfis(self) -> None:
+        self._recarregar_favoritas()
         self.perfis.clear()
         grupos = self.store.listar_por_uf()
         if not grupos:
@@ -1695,6 +3035,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
             self.processo.kill()
             self.processo.waitForFinished(1500)
+        self._pool_painel.waitForDone(5000)
         evento.accept()
 
 

@@ -32,6 +32,7 @@ class TestGuiQt(TestCase):
 
         class MapaFake(QtWidgets.QWidget):
             areaSelecionada = QtCore.Signal(object)
+            desenhoConcluido = QtCore.Signal()
 
             def __init__(self, bbox_inicial, parent=None):
                 super().__init__(parent)
@@ -46,6 +47,10 @@ class TestGuiQt(TestCase):
             def reativar(self):
                 pass
 
+            def ativar_desenho(self, ativo=True):
+                self.desenhando = ativo
+                return True
+
         gui.MapaWidget = MapaFake
 
     @classmethod
@@ -56,6 +61,19 @@ class TestGuiQt(TestCase):
         self.temporario = TemporaryDirectory()
         self.pasta = Path(self.temporario.name)
         gui.LOCAL_DB = self.pasta / "perfis.db"
+        self.municipios_original = gui.MUNICIPIOS_IBGE
+        gui.MUNICIPIOS_IBGE = self.pasta / "municipios.json"
+        gui.MUNICIPIOS_IBGE.write_text(
+            json.dumps(
+                {
+                    "municipios": [
+                        {"codigo_ibge": "5107925", "nome": "Sorriso", "uf": "MT", "bbox": [-56.3, -13.1, -55.2, -12.0]},
+                        {"codigo_ibge": "5103403", "nome": "Cuiabá", "uf": "MT", "bbox": [-56.3, -15.7, -55.4, -15.0]},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
         self.script_original = gui.SCRIPT_CLI
         self.janela = gui.MainWindow()
         self.janela.output_path.setText(str(self.pasta / "config.yaml"))
@@ -68,6 +86,7 @@ class TestGuiQt(TestCase):
             self.janela.processo.waitForFinished(1000)
         self.janela.close()
         gui.SCRIPT_CLI = self.script_original
+        gui.MUNICIPIOS_IBGE = self.municipios_original
         self.temporario.cleanup()
 
     def _aguardar_processo(self, segundos: float = 5) -> None:
@@ -95,6 +114,338 @@ class TestGuiQt(TestCase):
         self.app.processEvents()
         textos = [label.text() for label in self.janela.stack.currentWidget().findChildren(QtWidgets.QLabel)]
         self.assertIn("Problemas comuns", textos)
+
+    def test_inicio_e_a_pagina_inicial_com_acoes_simples(self) -> None:
+        self.assertEqual(self.janela.PAGINAS[0][0], "Início")
+        self.assertEqual(self.janela.stack.currentIndex(), 0)
+        textos = {
+            self.janela.btn_inicio_regiao.text(),
+            self.janela.btn_inicio_buscar.text(),
+            self.janela.btn_inicio_analisar.text(),
+            self.janela.btn_inicio_resultados.text(),
+        }
+        self.assertEqual(
+            textos,
+            {"Selecionar região", "Buscar imagens", "Analisar região", "Consultar resultados"},
+        )
+
+    def test_painel_sem_configuracao_nao_le_outro_yaml(self) -> None:
+        self.janela._pool_painel.waitForDone(5000)
+        self.app.processEvents()
+        self.assertFalse(Path(self.janela.output_path.text()).exists())
+
+        self.janela._atualizar_painel(sincrono=True)
+
+        self.assertIn("Nenhuma configuração", self.janela.painel_proxima_acao.text())
+        self.assertEqual(self.janela.painel_valores["disco"].text(), "…")
+
+    def test_acoes_do_inicio_navegam_sem_executar(self) -> None:
+        self.janela.btn_inicio_regiao.click()
+        self.assertEqual(self.janela.titulo_pagina.text(), "Área e período")
+        indice_area = self.janela._indice_pagina("Área e período")
+        self.assertTrue(self.janela.botoes_navegacao[indice_area].isChecked())
+
+        self.janela.btn_inicio_buscar.click()
+        self.assertEqual(self.janela.titulo_pagina.text(), "Baixar imagens")
+
+        self.janela.btn_inicio_analisar.click()
+        self.assertEqual(self.janela.operacao.currentData(), "analisar")
+        self.assertEqual(
+            self.janela.processo.state(), QtCore.QProcess.ProcessState.NotRunning
+        )
+
+        self.janela.btn_inicio_resultados.click()
+        self.assertEqual(self.janela.titulo_pagina.text(), "Análise da região")
+
+    def test_painel_inicial_mostra_resumo_local(self) -> None:
+        self.janela._salvar_configuracao(avisar=False)
+        pasta_cena = self.pasta / "cenas" / "2026-01-01" / "CENA"
+        pasta_cena.mkdir(parents=True)
+        (pasta_cena / "B02.tif").write_bytes(b"1234")
+        (pasta_cena / ".B03.tif.part").write_bytes(b"1")
+        config = yaml.safe_load(Path(self.janela.output_path.text()).read_text(encoding="utf-8"))
+        config["download"]["pasta"] = str(self.pasta / "cenas")
+        config["dataset"]["pasta"] = str(self.pasta / "dataset")
+        config["dataset"]["catalogo"] = str(self.pasta / "patches.csv")
+        config["download"]["catalogo"] = str(self.pasta / "catalogo.csv")
+        config["analise"]["historico"] = str(self.pasta / "historico.sqlite3")
+        Path(self.janela.output_path.text()).write_text(yaml.safe_dump(config), encoding="utf-8")
+        self.janela._pool_painel.waitForDone(5000)
+        self.app.processEvents()
+
+        self.janela._atualizar_painel(sincrono=True)
+        self.app.processEvents()
+
+        self.assertEqual(self.janela.painel_valores["cenas_baixadas"].text(), "1")
+        self.assertIn("incompleto", self.janela.painel_detalhes["cenas_baixadas"].text())
+        self.assertIn("serão retomados", self.janela.painel_avisos.text())
+        self.assertNotEqual(self.janela.painel_valores["disco"].text(), "…")
+        self.assertIn("validação científica", self.janela.painel_detalhes["modelos"].text())
+        self.assertTrue(self.janela.btn_atualizar_painel.isEnabled())
+
+    def test_pesquisa_municipio_sem_acento_aplica_area(self) -> None:
+        self.janela.busca_area.setText("cuiaba")
+        self.assertFalse(self.janela.resultados_area.isHidden())
+        item = self.janela.resultados_area.item(0)
+        self.assertIn("Cuiabá (MT)", item.text())
+
+        self.janela._usar_resultado_area(item)
+
+        self.assertEqual(self.janela.nome_regiao.text(), "Cuiabá")
+        self.assertEqual(self.janela.uf.text(), "MT")
+        self.assertEqual(self.janela._bbox_atual(), [-56.3, -15.7, -55.4, -15.0])
+        self.assertEqual(self.janela.mapa.bbox, [-56.3, -15.7, -55.4, -15.0])
+        self.assertIn("aproximado", self.janela.area_mensagem.text())
+        self.assertTrue(self.janela.resultados_area.isHidden())
+
+    def test_pesquisa_sem_lista_de_municipios_orienta_geracao(self) -> None:
+        gui.MUNICIPIOS_IBGE.unlink()
+        self.janela.__dict__.pop("_cache_municipios", None)
+
+        self.janela.busca_area.setText("Sorriso")
+
+        self.assertIn("gerar_municipios_ibge", self.janela.resultados_area.item(0).text())
+
+    def test_importa_geojson_e_informa_retangulo_envolvente(self) -> None:
+        caminho = self.pasta / "fazenda.geojson"
+        caminho.write_text(
+            json.dumps(
+                {
+                    "type": "Feature",
+                    "properties": {"nome": "Fazenda Teste"},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[-55.9, -12.7], [-55.6, -12.7], [-55.6, -12.4], [-55.9, -12.7]]],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        area = self.janela._importar_limite_de(caminho)
+
+        self.assertIsNotNone(area)
+        self.assertEqual(self.janela.nome_regiao.text(), "Fazenda Teste")
+        self.assertEqual(self.janela._bbox_atual(), [-55.9, -12.7, -55.6, -12.4])
+        self.assertIn("retângulo envolvente", self.janela.area_mensagem.text())
+
+    def test_importacao_invalida_nao_altera_area(self) -> None:
+        antes = self.janela._bbox_atual()
+        caminho = self.pasta / "ponto.geojson"
+        caminho.write_text('{"type": "Point", "coordinates": [-55, -12]}', encoding="utf-8")
+
+        with patch.object(gui.QtWidgets.QMessageBox, "warning") as aviso:
+            area = self.janela._importar_limite_de(caminho)
+
+        self.assertIsNone(area)
+        aviso.assert_called_once()
+        self.assertEqual(self.janela._bbox_atual(), antes)
+
+    def test_favorita_salva_aparece_na_lista_e_na_busca(self) -> None:
+        self.janela.nome_regiao.setText("Talhões Norte")
+        self.janela.oeste.setValue(-56.0)
+        self.janela._salvar_perfil()
+        self.assertIn("Talhões Norte", self.janela.favoritos_area.item(0).text())
+
+        self.janela.nome_regiao.setText("Outra")
+        self.janela.oeste.setValue(-57.0)
+        self.janela._abrir_favorita(self.janela.favoritos_area.item(0))
+        self.assertEqual(self.janela.nome_regiao.text(), "Talhões Norte")
+        self.assertEqual(self.janela.oeste.value(), -56.0)
+
+        self.janela.busca_area.setText("talhoes")
+        self.assertIn("região favorita", self.janela.resultados_area.item(0).text())
+
+    def test_desenhar_area_ativa_modo_e_desliga_ao_concluir(self) -> None:
+        self.janela.btn_desenhar_area.setChecked(True)
+        self.assertTrue(self.janela.mapa.desenhando)
+
+        self.janela.mapa.desenhoConcluido.emit()
+
+        self.assertFalse(self.janela.btn_desenhar_area.isChecked())
+
+    def _cli_fake_eventos(self, linhas: list[str]) -> None:
+        script = self.pasta / "cli_eventos.py"
+        corpo = "import sys, json\nprint('argv=' + ' '.join(sys.argv[1:]), flush=True)\n"
+        for linha in linhas:
+            corpo += f"print({linha!r}, flush=True)\n"
+        script.write_text(corpo, encoding="utf-8")
+        gui.SCRIPT_CLI = script
+
+    def test_assistente_busca_preenche_tabela_e_oculta_json_do_log(self) -> None:
+        self._cli_fake_eventos(
+            [
+                '[PROGRESSO] {"tipo": "cena_encontrada", "cena": "S2_A", "data": "2026-01-01", '
+                '"nuvem_metadados_pct": 5.0, "tamanho_bytes": null, "miniatura": "", '
+                '"baixada": false, "preview_local": ""}',
+                '[PROGRESSO] {"tipo": "cena_encontrada", "cena": "S2_B", "data": "2026-01-17", '
+                '"nuvem_metadados_pct": 80.0, "tamanho_bytes": null, "miniatura": "", '
+                '"baixada": true, "preview_local": ""}',
+                "texto comum",
+            ]
+        )
+        self.janela._navegar(self.janela._indice_pagina("Baixar imagens"))
+
+        self.janela._assistente_buscar()
+        self._aguardar_processo()
+        self.app.processEvents()
+
+        self.assertEqual(self.janela.assist_stack.currentIndex(), 1)
+        self.assertEqual(self.janela.assist_tabela.rowCount(), 2)
+        log = self.janela.log.toPlainText()
+        self.assertIn("--progresso-json", log)
+        self.assertIn("texto comum", log)
+        self.assertNotIn("cena_encontrada", log)
+
+        self.janela.assist_nuvem_max.setValue(50)
+        self.assertEqual(self.janela.assist_tabela.rowCount(), 1)
+        self.janela.assist_nuvem_max.setValue(100)
+        self.janela.assist_ocultar_baixadas.setChecked(True)
+        self.assertEqual(self.janela.assist_tabela.rowCount(), 1)
+        self.assertEqual(self.janela.assist_tabela.item(0, 2).text(), "S2_A")
+
+    def test_assistente_exige_cena_marcada_para_revisar(self) -> None:
+        with patch.object(gui.QtWidgets.QMessageBox, "information") as aviso:
+            self.janela._assistente_revisar()
+
+        aviso.assert_called_once()
+        self.assertNotEqual(self.janela.assist_stack.currentIndex(), 2)
+
+    def test_assistente_baixa_somente_cenas_marcadas_e_mostra_progresso(self) -> None:
+        self.janela._assist_cenas = [
+            gui.CenaEncontrada("S2_A", "2026-01-01", None, None, "", False, ""),
+            gui.CenaEncontrada("S2_B", "2026-01-17", None, None, "", False, ""),
+        ]
+        self.janela._assistente_renderizar_tabela()
+        self.janela.assist_tabela.item(1, 0).setCheckState(QtCore.Qt.CheckState.Checked)
+        self.janela._assistente_revisar()
+        self.assertEqual(self.janela.assist_stack.currentIndex(), 2)
+        self.assertIn("1 cena(s)", self.janela.assist_resumo.text())
+        self._cli_fake_eventos(
+            [
+                '[PROGRESSO] {"tipo": "cena", "cena": "S2_B", "data": "2026-01-17", '
+                '"indice": 1, "total": 1, "etapa": "bandas"}',
+                '[PROGRESSO] {"tipo": "arquivo", "cena": "S2_B", "arquivo": "B04.tif", '
+                '"recebidos": 50, "total": 100, "velocidade_bps": 10.0, "retomado": false}',
+                '[PROGRESSO] {"tipo": "cena", "cena": "S2_B", "data": "2026-01-17", '
+                '"indice": 1, "total": 1, "etapa": "concluida"}',
+            ]
+        )
+
+        self.janela._assistente_iniciar()
+        self._aguardar_processo()
+        self.app.processEvents()
+
+        log = self.janela.log.toPlainText()
+        self.assertIn("--cenas S2_B", log)
+        self.assertNotIn("S2_A", log.split("--cenas", 1)[1].splitlines()[0])
+        self.assertEqual(self.janela.assist_progresso_geral.value(), 100)
+        self.assertIn("Download concluído", self.janela.assist_mensagem.text())
+        self.assertEqual(self.janela._assist_cenas[1].situacao, "Baixada")
+
+    def test_assistente_remove_parciais_legados_com_confirmacao(self) -> None:
+        self.janela._salvar_configuracao(avisar=False)
+        config = yaml.safe_load(Path(self.janela.output_path.text()).read_text(encoding="utf-8"))
+        config["download"]["pasta"] = str(self.pasta / "cenas")
+        Path(self.janela.output_path.text()).write_text(yaml.safe_dump(config), encoding="utf-8")
+        cena = self.pasta / "cenas" / "2026-01-01" / "C"
+        cena.mkdir(parents=True)
+        legado = cena / ".B03.tif.abcdef12.part.tif"
+        legado.write_bytes(b"123")
+        retomavel = cena / ".B04.tif.part"
+        retomavel.write_bytes(b"1")
+
+        self.janela._assistente_atualizar_legados(None)
+        self.assertFalse(self.janela.assist_limpar_legados.isHidden())
+        with patch.object(
+            gui.QtWidgets.QMessageBox,
+            "question",
+            return_value=gui.QtWidgets.QMessageBox.StandardButton.No,
+        ):
+            self.janela._assistente_limpar_legados()
+        self.assertTrue(legado.exists())
+
+        with patch.object(
+            gui.QtWidgets.QMessageBox,
+            "question",
+            return_value=gui.QtWidgets.QMessageBox.StandardButton.Yes,
+        ):
+            self.janela._assistente_limpar_legados()
+
+        self.assertFalse(legado.exists())
+        self.assertTrue(retomavel.exists())
+
+    def test_datas_do_assistente_e_da_area_ficam_sincronizadas(self) -> None:
+        self.janela.assist_inicio.setDate(QtCore.QDate(2026, 2, 1))
+        self.assertEqual(self.janela.inicio.date(), QtCore.QDate(2026, 2, 1))
+        self.janela.fim.setDate(QtCore.QDate(2026, 3, 1))
+        self.assertEqual(self.janela.assist_fim.date(), QtCore.QDate(2026, 3, 1))
+
+    def _preparar_resultado_real(self) -> Path:
+        from tests.test_resultados_analise import criar_artefatos
+
+        resultado = criar_artefatos(self.pasta)
+        dados = json.loads(resultado.read_text(encoding="utf-8"))
+        for item in dados["resultados"]:
+            item["entrada"] = str(self.pasta / item["entrada"])
+        resultado.write_text(json.dumps(dados), encoding="utf-8")
+        self.janela._salvar_configuracao(avisar=False)
+        config = yaml.safe_load(Path(self.janela.output_path.text()).read_text(encoding="utf-8"))
+        config["dataset"]["pasta"] = str(self.pasta / "data/dataset")
+        config["analise"]["pasta"] = str(self.pasta / "data/analises")
+        config["analise"]["historico"] = str(self.pasta / "data/historico.sqlite3")
+        Path(self.janela.output_path.text()).write_text(yaml.safe_dump(config), encoding="utf-8")
+        return resultado
+
+    def test_resultado_separa_talhoes_de_culturas_e_lista_deteccoes(self) -> None:
+        self.janela._carregar_resultado_analise(self._preparar_resultado_real())
+
+        abas = [self.janela.analise_abas.tabText(i) for i in range(self.janela.analise_abas.count())]
+        self.assertEqual(abas, ["Talhões (detecção)", "Culturas (classificação)"])
+        self.assertEqual(self.janela.analise_itens.count(), 2)
+        self.assertEqual(self.janela.analise_deteccoes.rowCount(), 2)
+        self.assertEqual(self.janela.analise_deteccoes.item(0, 1).text(), "90.0%")
+        self.assertIn("2026-03-22", self.janela.analise_item_info.text())
+        self.assertIn("NDVI médio 0.70", self.janela.analise_vegetacao.text())
+        self.assertIn("não por talhão", self.janela.analise_vegetacao.text())
+        self.assertIn("2.1.0-beta.1", self.janela.analise_info.text())
+        self.assertIn("detecção por caixas", self.janela.analise_info.text())
+        self.assertEqual(self.janela.analise_aviso_modelo.text(), "")
+        self.assertEqual(self.janela.analise_cultura_estado.text(), "Cultura não determinada")
+        self.assertFalse(self.janela.analise_original.pixmap().isNull())
+        self.assertFalse(self.janela.analise_anotada.pixmap().isNull())
+        textos = " ".join(
+            label.text() for label in self.janela.stack.currentWidget().findChildren(QtWidgets.QLabel)
+        ).casefold()
+        self.assertNotIn("hectares de", textos)
+
+    def test_exporta_csv_do_resultado(self) -> None:
+        self.janela._carregar_resultado_analise(self._preparar_resultado_real())
+        destino = self.pasta / "exportado"
+        with patch.object(
+            gui.QtWidgets.QFileDialog, "getSaveFileName", return_value=(str(destino), "CSV (*.csv)")
+        ):
+            self.janela._exportar_resultado("csv")
+
+        conteudo = (self.pasta / "exportado.csv").read_text(encoding="utf-8")
+        self.assertIn("x1_px", conteudo)
+        self.assertEqual(len(conteudo.strip().splitlines()), 3)
+
+    def test_historico_filtra_e_abre_resultado(self) -> None:
+        resultado = self._preparar_resultado_real()
+        repositorio = gui.RepositorioHistoricoAnalises(self.pasta / "data/historico.sqlite3", self.pasta)
+        repositorio.salvar({"analysis_id": "analise-1", "status": "concluida", "regiao": "Sorriso"})
+        repositorio.salvar({"analysis_id": "analise-2", "status": "concluida", "regiao": "Cuiabá"})
+        self.janela._recarregar_historico()
+        self.assertEqual(self.janela.historico_tabela.rowCount(), 2)
+
+        self.janela.historico_filtro.setText("sorriso")
+        self.assertEqual(self.janela.historico_tabela.rowCount(), 1)
+        self.janela.historico_tabela.setCurrentCell(0, 0)
+        self.janela._abrir_resultado_historico()
+
+        self.assertEqual(self.janela.titulo_pagina.text(), "Análise da região")
+        self.assertEqual(self.janela._resultado_visual.caminho_json, resultado.resolve())
 
     def test_salva_yaml_com_os_dados_do_formulario(self) -> None:
         self.janela.nome_regiao.setText("Norte de MT")
@@ -298,7 +649,9 @@ class TestGuiQt(TestCase):
 
         self.janela._carregar_resultado_analise(resultado)
 
-        self.assertEqual(self.janela.stack.currentIndex(), 4)
+        self.assertEqual(
+            self.janela.stack.currentIndex(), self.janela._indice_pagina("Análise da região")
+        )
         self.assertEqual(self.janela.analise_tabela.rowCount(), 1)
         self.assertEqual(self.janela.analise_tabela.item(0, 0).text(), "soja")
         self.assertIn("Detecções: 2", self.janela.analise_info.text())

@@ -193,6 +193,21 @@ forneça um peso Ultralytics YOLO compatível exatamente em
 aprovado já acompanha esta árvore e é empacotado junto com o software; a
 inferência local passa a usar esse arquivo por padrão.
 
+Baixar somente cenas escolhidas (IDs do catálogo) e emitir progresso estruturado
+para interfaces:
+
+```bash
+.venv/bin/python src/baixar_inpe_mt.py \
+  --baixar --max-itens 0 --cenas S2-16D_V2_014015_20260423,S2-16D_V2_014016_20260423 \
+  --progresso-json
+```
+
+`--cenas` restringe a operação aos IDs informados; cenas que não voltarem na
+busca são relatadas e contam como erro. `--progresso-json` emite linhas
+`[PROGRESSO] {json}` com eventos de cena (`cena_encontrada`, `cena`) e de arquivo
+(bytes recebidos, total, velocidade e retomada). Downloads interrompidos são
+retomados automaticamente na próxima execução quando o servidor suporta `Range`.
+
 Exibir todas as opções:
 
 ```bash

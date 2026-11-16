@@ -104,6 +104,19 @@ QLabel#statusChip {
 QFrame#card { background: rgba(255, 255, 255, 238); border: 1px solid %(borda_suave)s; border-radius: 12px; }
 QLabel#cardTitle { font-size: 16px; font-weight: 700; color: %(texto)s; }
 QLabel#cardHelp { color: %(texto_suave)s; font-size: 12px; }
+QLabel#stepLabel {
+    color: %(texto_suave)s; background: %(secundario_fundo)s; border-radius: 8px;
+    padding: 8px; font-weight: 600;
+}
+QLabel#stepLabelActive {
+    color: %(superficie)s; background: %(destaque)s; border-radius: 8px;
+    padding: 8px; font-weight: 700;
+}
+QLabel#stepLabelDone {
+    color: %(status_texto)s; background: %(status_fundo)s; border-radius: 8px;
+    padding: 8px; font-weight: 600;
+}
+QLabel#statValue { color: %(destaque)s; font-size: 26px; font-weight: 750; }
 QLineEdit, QDateEdit, QSpinBox, QDoubleSpinBox, QComboBox,
 QPlainTextEdit, QListWidget, QTreeWidget {
     color: %(texto)s; background: %(superficie_campo)s; border: 1px solid %(borda)s;

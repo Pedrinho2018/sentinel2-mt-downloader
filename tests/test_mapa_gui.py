@@ -97,3 +97,38 @@ class TestMapaWidget(TestCase):
             mapa.reativar()
         invalidar.assert_called_once()
         aplicar.assert_not_called()
+
+
+@skipUnless(PYSIDE_DISPONIVEL, "PySide6 é uma dependência opcional da GUI")
+class TestMapaModoDesenho(TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def test_html_expoe_modo_desenho_sem_shift(self) -> None:
+        html = MapaWidgetReal._html()
+
+        self.assertIn("window.setDrawMode", html)
+        self.assertIn("window.selectionVersion += 1", html)
+        self.assertIn("!event.originalEvent.shiftKey && !window.drawMode", html)
+
+    def test_desenho_nao_inicia_antes_do_mapa_pronto(self) -> None:
+        mapa = MapaWidgetReal([-61.65, -18.05, -50.2, -7.3])
+        self.addCleanup(mapa.close)
+
+        self.assertFalse(mapa.ativar_desenho(True))
+        self.assertFalse(mapa._timer_desenho.isActive())
+
+    def test_nova_versao_da_selecao_captura_bbox_e_conclui(self) -> None:
+        mapa = MapaWidgetReal([-61.65, -18.05, -50.2, -7.3])
+        self.addCleanup(mapa.close)
+        concluido = QtTest.QSignalSpy(mapa.desenhoConcluido)
+        mapa._timer_desenho.start()
+        with mock.patch.object(mapa, "capturar_bbox") as capturar:
+            mapa._receber_versao_selecao(0)
+            capturar.assert_not_called()
+            mapa._receber_versao_selecao(1)
+
+        capturar.assert_called_once()
+        self.assertEqual(concluido.count(), 1)
+        self.assertFalse(mapa._timer_desenho.isActive())

@@ -8,15 +8,40 @@ import re
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
 from pystac_client import Client
+from pystac_client.stac_api_io import StacApiIO
+from urllib3.util.retry import Retry
 
 from .assets import ResolvedorAssets
 from .catalogo import RepositorioCatalogoCSV, RepositorioCatalogoPatchesCSV
 from .caminhos import caminho_contido, componente_seguro
 from .configuracao import ConfiguracaoDataset, ConfiguracaoProjeto
-from .http import ClienteDownloadHTTP
+from .http import ClienteDownloadHTTP, ProgressoDownload
 from .imagens import ProcessadorImagem
 from .modelos import RegistroCatalogo, ResumoDataset, ResumoExecucao
 from .patches import GeradorDataset
+
+
+STATUS_STAC_TRANSITORIOS = (429, 502, 503, 504)
+
+
+def politica_retentativa_stac() -> Retry:
+    """Repete consultas STAC em falhas transitórias do servidor (ex.: 502 do nginx).
+
+    Buscas STAC são somente leitura, então repetir GET/POST é seguro. Com
+    `backoff_factor=2`, as esperas crescem até cerca de 30 s no total.
+    """
+    return Retry(
+        total=5,
+        backoff_factor=2,
+        status_forcelist=STATUS_STAC_TRANSITORIOS,
+        allowed_methods=None,
+        raise_on_status=False,
+        respect_retry_after_header=True,
+    )
+
+
+def abrir_cliente_stac(url: str) -> Client:
+    return Client.open(url, stac_io=StacApiIO(max_retries=politica_retentativa_stac()))
 
 
 @dataclass(frozen=True)
@@ -28,6 +53,8 @@ class OpcoesColeta:
     gerar_dataset: bool = False
     patch_size: int | None = None
     patch_stride: int | None = None
+    # IDs escolhidos pelo usuário; vazio mantém o comportamento anterior (todas as cenas).
+    cenas: tuple[str, ...] = ()
 
 
 class ServicoSentinel2:
@@ -37,8 +64,10 @@ class ServicoSentinel2:
         catalogo: RepositorioCatalogoCSV | None = None,
         processador: ProcessadorImagem | None = None,
         catalogo_patches: RepositorioCatalogoPatchesCSV | None = None,
-        cliente_stac_factory: Callable[[str], object] = Client.open,
+        cliente_stac_factory: Callable[[str], object] = abrir_cliente_stac,
         saida: Callable[[str], None] = print,
+        eventos: Callable[[dict], None] | None = None,
+        downloader_factory: Callable[..., ClienteDownloadHTTP] = ClienteDownloadHTTP,
     ) -> None:
         self.config = config
         self.catalogo = catalogo or RepositorioCatalogoCSV()
@@ -46,6 +75,18 @@ class ServicoSentinel2:
         self.catalogo_patches = catalogo_patches or RepositorioCatalogoPatchesCSV()
         self.cliente_stac_factory = cliente_stac_factory
         self.saida = saida
+        self.eventos = eventos
+        self.downloader_factory = downloader_factory
+        self._cena_atual = ""
+
+    def _emitir(self, evento: dict) -> None:
+        if self.eventos is not None:
+            self.eventos(evento)
+
+    def _progresso_arquivo(self, progresso: ProgressoDownload) -> None:
+        evento = progresso.para_dict()
+        evento["cena"] = self._cena_atual
+        self._emitir(evento)
 
     def executar(self, opcoes: OpcoesColeta) -> ResumoExecucao:
         inicio = opcoes.inicio or self.config.periodo.inicio
@@ -68,7 +109,13 @@ class ServicoSentinel2:
         )
         downloader = None
         if opcoes.baixar_arquivos:
-            downloader = ClienteDownloadHTTP(self.config.download.timeout_segundos, self.config.download.chunk_mb)
+            downloader = self.downloader_factory(
+                self.config.download.timeout_segundos,
+                self.config.download.chunk_mb,
+                progresso=self._progresso_arquivo if self.eventos else None,
+            )
+        selecionadas = {str(cena) for cena in opcoes.cenas if str(cena).strip()}
+        encontradas: set[str] = set()
 
         registros: list[RegistroCatalogo] = []
         registros_patches = []
@@ -77,10 +124,21 @@ class ServicoSentinel2:
         pasta_dados = self.config.caminho(self.config.download.pasta)
 
         for item in busca.items():
+            if selecionadas:
+                if encontradas == selecionadas:
+                    # Todas as cenas escolhidas já foram processadas: não pagina o STAC à toa.
+                    break
+                if item.id not in selecionadas or item.id in encontradas:
+                    continue
+                encontradas.add(item.id)
             if max_itens > 0 and resumo.aprovadas >= max_itens:
                 break
             resumo.candidatos += 1
-            if max_itens > 0 and resumo.candidatos > self.config.download.max_candidatos_teste:
+            if (
+                not selecionadas
+                and max_itens > 0
+                and resumo.candidatos > self.config.download.max_candidatos_teste
+            ):
                 self.saida(f"[LIMITE] {self.config.download.max_candidatos_teste} candidatos avaliados.")
                 break
 
@@ -94,12 +152,24 @@ class ServicoSentinel2:
             if not opcoes.baixar_arquivos:
                 registros.append(self._registro(item, data, "CENA", "nao_avaliado", "candidato_catalogado"))
                 resumo.aprovadas += 1
+                self._emitir(self._descrever_cena(item, data, pasta_item))
                 continue
 
+            self._cena_atual = item.id
+            evento_cena = {
+                "tipo": "cena",
+                "cena": item.id,
+                "data": data,
+                "indice": resumo.candidatos,
+                "total": len(selecionadas),
+            }
+            self._emitir({**evento_cena, "etapa": "qualidade"})
             auxiliares = self._baixar_auxiliares(item, data, pasta_item, downloader, registros, resumo)
             nuvem = self._avaliar_qualidade(item, data, auxiliares, registros, resumo)
             if nuvem is None:
+                self._emitir({**evento_cena, "etapa": "descartada"})
                 continue
+            self._emitir({**evento_cena, "etapa": "bandas"})
 
             resumo.aprovadas += 1
             self.saida(f"  [APROVADA {resumo.aprovadas}] baixando bandas científicas...")
@@ -118,7 +188,15 @@ class ServicoSentinel2:
                     resumo_dataset_total.erros += 1
                     self.saida(f"[DATASET] ERRO na cena {item.id}: {exc}")
             self._remover_scl_se_configurado(auxiliares)
+            self._emitir({**evento_cena, "etapa": "concluida"})
 
+        faltantes = sorted(selecionadas - encontradas)
+        if faltantes:
+            resumo.erros += len(faltantes)
+            self.saida(
+                f"[AVISO] {len(faltantes)} cena(s) selecionada(s) não retornaram na busca: "
+                + ", ".join(faltantes[:5])
+            )
         caminho_catalogo = self.config.caminho(self.config.download.catalogo)
         self.catalogo.salvar(caminho_catalogo, registros)
         if dataset_ativo:
@@ -128,6 +206,52 @@ class ServicoSentinel2:
             self._imprimir_resumo_dataset(resumo_dataset_total)
         self._imprimir_resumo(resumo, caminho_catalogo, opcoes.baixar_arquivos)
         return resumo
+
+    def _descrever_cena(self, item, data: str, pasta_item: Path) -> dict:
+        """Resumo público de uma cena encontrada, usado pelo assistente de download."""
+        propriedades = getattr(item, "properties", {}) or {}
+        nuvem = propriedades.get("eo:cloud_cover")
+        try:
+            nuvem = float(nuvem) if nuvem is not None else None
+        except (TypeError, ValueError):
+            nuvem = None
+        tamanho = 0
+        tamanho_conhecido = True
+        for banda in (*self.config.bandas, *self.config.qualidade.camadas_auxiliares):
+            asset = self.localizar_asset(item, ResolvedorAssets.normalizar(banda))
+            if asset is None:
+                continue
+            extra = getattr(asset, "extra_fields", {}) or {}
+            valor = extra.get("file:size")
+            if isinstance(valor, int) and valor > 0:
+                tamanho += valor
+            else:
+                tamanho_conhecido = False
+        miniatura = ""
+        assets = getattr(item, "assets", {}) or {}
+        for chave in ("thumbnail", "THUMBNAIL"):
+            if chave in assets:
+                href = str(getattr(assets[chave], "href", ""))
+                if urlsplit(href).scheme in {"http", "https"}:
+                    miniatura = self._url_publica(href)
+                break
+        baixada = pasta_item.is_dir() and any(
+            caminho.suffix.casefold() in {".tif", ".tiff", ".jp2"}
+            for caminho in pasta_item.iterdir()
+            if caminho.is_file() and not caminho.name.startswith(".")
+        )
+        preview = pasta_item / "preview_rgb.jpg"
+        return {
+            "tipo": "cena_encontrada",
+            "cena": item.id,
+            "data": data,
+            "colecao": self.config.stac.colecao,
+            "nuvem_metadados_pct": nuvem,
+            "tamanho_bytes": tamanho if tamanho_conhecido and tamanho else None,
+            "miniatura": miniatura,
+            "baixada": baixada,
+            "preview_local": self._relativo(preview) if preview.is_file() else "",
+        }
 
     def _baixar_auxiliares(
         self,
