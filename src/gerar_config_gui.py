@@ -18,6 +18,7 @@ from sentinel2_mt.analise.historico import RepositorioHistoricoAnalises
 from sentinel2_mt.analise.resultados import (
     AVISO_AREA,
     AVISO_CULTURA,
+    aviso_classes_modelo,
     ItemResultado,
     ResultadoVisualizacao,
     carregar_resultado,
@@ -1061,7 +1062,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if ativo is None:
             detalhes["modelos"].setText("Nenhum modelo ativo encontrado.")
         else:
-            tarefa = {"detection": "detecção de talhões", "classify": "classificação"}.get(
+            tarefa = {"detection": "detecção por caixas", "classify": "classificação"}.get(
                 ativo.tarefa, ativo.tarefa or "tarefa não informada"
             )
             integridade = {
@@ -2076,6 +2077,10 @@ class MainWindow(QtWidgets.QMainWindow):
         aviso.setObjectName("cardHelp")
         aviso.setWordWrap(True)
         esquerda.addWidget(aviso)
+        self.analise_aviso_modelo = QtWidgets.QLabel("")
+        self.analise_aviso_modelo.setWordWrap(True)
+        self.analise_aviso_modelo.setStyleSheet(f"color: {CORES['perigo_texto']};")
+        esquerda.addWidget(self.analise_aviso_modelo)
         painel_esquerdo = QtWidgets.QWidget()
         painel_esquerdo.setLayout(esquerda)
 
@@ -2103,7 +2108,7 @@ class MainWindow(QtWidgets.QMainWindow):
         direita.addWidget(self.analise_item_info)
         self.analise_deteccoes = QtWidgets.QTableWidget(0, 3)
         self.analise_deteccoes.setHorizontalHeaderLabels(
-            ["Classe", "Confiança", "Caixa (pixels x1, y1, x2, y2)"]
+            ["Classe do modelo", "Confiança", "Caixa (pixels x1, y1, x2, y2)"]
         )
         self.analise_deteccoes.horizontalHeader().setStretchLastSection(True)
         self.analise_deteccoes.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -2532,7 +2537,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.analise_info.setText(
             f"Região: {resultado.regiao or '—'}\nPeríodo: {periodo}\n"
             f"Cenas: {', '.join(resultado.cenas) or '—'}\n"
-            f"Modelo: {modelo} (detecção de talhões; SHA-256 {hash_curto}…)\n"
+            f"Modelo: {modelo} (detecção por caixas; SHA-256 {hash_curto}…)\n"
             f"Dispositivo de processamento: {resultado.dispositivo or '—'}\n"
             f"Analisado em: {resultado.criado_em or '—'}\n"
             f"Detecções: {estatisticas.get('total_deteccoes', 0)} em "
@@ -2572,6 +2577,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.analise_item_info.setText("")
             self.analise_vegetacao.setText("")
 
+        self.analise_aviso_modelo.setText(aviso_classes_modelo(resultado.modelo_classes))
         aprovado = modelo_classificacao_aprovado()
         self.analise_cultura_estado.setText(
             "Cultura não determinada" if aprovado is None else "Classificação disponível"

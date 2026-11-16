@@ -15,6 +15,7 @@ from rasterio.transform import from_origin
 from sentinel2_mt.analise.historico import RegistroHistoricoAnalise
 from sentinel2_mt.analise.resultados import (
     AVISO_CULTURA,
+    aviso_classes_modelo,
     carregar_resultado,
     exportar_csv,
     exportar_json,
@@ -197,3 +198,12 @@ class TestFiltroHistorico(TestCase):
         recentes = filtrar_historico(self.REGISTROS, ultimos_dias=30, hoje=date(2026, 11, 16))
         self.assertEqual([r.analysis_id for r in recentes], ["a1"])
         self.assertEqual(len(filtrar_historico(self.REGISTROS, ultimos_dias=0)), 3)
+
+
+class TestAvisoClassesModelo(TestCase):
+    def test_alerta_quando_modelo_de_deteccao_usa_nomes_de_culturas(self) -> None:
+        aviso = aviso_classes_modelo(["soja", "milho", "pastagem", "nuvem"])
+        self.assertIn("milho, soja", aviso)
+        self.assertIn("não foram validadas", aviso)
+        self.assertEqual(aviso_classes_modelo(["talhao"]), "")
+        self.assertNotIn("não identifica", AVISO_CULTURA)
