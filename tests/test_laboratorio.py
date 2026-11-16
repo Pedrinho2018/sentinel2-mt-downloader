@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
@@ -111,6 +112,9 @@ class TestProjetos(BaseLaboratorio):
         self.assertEqual(self.repo.listar_imagens(projeto.id)[0].duplicata_de, "")
 
     def test_banco_com_permissao_restrita(self) -> None:
+        # No Windows, chmod só alterna somente-leitura; a permissão POSIX não se aplica.
+        if os.name == "nt":
+            self.skipTest("permissões POSIX não se aplicam no Windows")
         modo = self.repo.caminho_banco.stat().st_mode & 0o777
         self.assertEqual(modo, 0o600)
 
