@@ -180,8 +180,13 @@ A página **Análise da região** separa os resultados em duas abas:
   informa escala 0,0001 e nodata -9999, e a leitura respeita a máscara do
   GeoTIFF multibanda.
 - **Culturas (classificação)**: mostra **Cultura não determinada** enquanto não
-  houver um modelo de classificação aprovado. O modelo atual detecta talhões e
-  não identifica soja, milho ou algodão.
+  houver um modelo validado e aprovado para identificar culturas.
+
+O `best.pt` atual é um modelo de **detecção por caixas** com 22 classes, várias
+com nomes de culturas e coberturas (`soja`, `milho`, `algodao`, `pastagem`,
+`nuvem`…). Como não há validação de campo aprovada, a tela chama essas classes
+de **classe do modelo**, mostra um alerta quando elas citam culturas e não as
+apresenta como cultura identificada.
 
 O cabeçalho informa região, período, cenas, modelo e versão (com o início do
 SHA-256), dispositivo e data da análise. **Exportar CSV** grava uma linha por
