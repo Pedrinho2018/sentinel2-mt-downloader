@@ -134,6 +134,21 @@ class TestLoteDeteccao(BaseRotulagem):
         self.assertEqual(resumo.imagem_alterada, 1)
         self.assertEqual(self.estados(projeto_id)["P0"], "pendente")
 
+    def test_avisa_quando_o_labelimg_salvou_so_em_pascal_voc(self) -> None:
+        projeto_id = self.projeto("deteccao", ["talhao"])
+        lote = preparar_lote(self.repo, projeto_id, self.raiz, self.pasta_lab)
+        (lote.rotulos / "P0.xml").write_text("<annotation/>", encoding="utf-8")
+        (lote.rotulos / "P1.xml").write_text("<annotation/>", encoding="utf-8")
+        (lote.rotulos / "P1.txt").write_text("0 0.5 0.5 0.2 0.2\n", encoding="utf-8")
+
+        resumo = importar_anotacoes(self.repo, projeto_id, self.pasta_lab)
+
+        self.assertEqual(resumo.somente_pascal_voc, 1)
+        self.assertIn("Pascal VOC", resumo.avisos[0])
+        self.assertIn("YOLO", resumo.avisos[0])
+        self.assertEqual(self.estados(projeto_id)["P0"], "pendente")
+        self.assertEqual(self.estados(projeto_id)["P1"], "rotulada")
+
     def test_lote_de_esquema_antigo_continua_importando_na_versao_dele(self) -> None:
         projeto_id = self.projeto("deteccao", ["talhao"])
         lote = preparar_lote(self.repo, projeto_id, self.raiz, self.pasta_lab)

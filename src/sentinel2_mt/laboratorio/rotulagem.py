@@ -230,6 +230,7 @@ class ResumoImportacao:
     com_erros: int = 0
     sem_anotacao: int = 0
     imagem_alterada: int = 0
+    somente_pascal_voc: int = 0
     avisos: list[str] = field(default_factory=list)
     erros_por_imagem: dict[str, list[str]] = field(default_factory=dict)
 
@@ -268,6 +269,9 @@ def importar_anotacoes(
         arquivo = next((c for c in candidatos if c.is_file() and not c.is_symlink()), None)
         if arquivo is None:
             resumo.sem_anotacao += 1
+            # O LabelImg grava Pascal VOC (.xml) por padrão; esse formato não é importado.
+            if any((pasta / f"{patch_id}.xml").is_file() for pasta in (lote.rotulos, lote.imagens)):
+                resumo.somente_pascal_voc += 1
             continue
         if not imagem.is_file() or sha256_arquivo(imagem) != item.get("sha256"):
             resumo.imagem_alterada += 1
@@ -288,6 +292,12 @@ def importar_anotacoes(
             resumo.erros_por_imagem[patch_id] = erros
         else:
             resumo.rotuladas += 1
+    if resumo.somente_pascal_voc:
+        resumo.avisos.append(
+            f"{resumo.somente_pascal_voc} imagem(ns) foram salvas só em Pascal VOC (.xml), o formato padrão "
+            "do LabelImg, e continuam pendentes. No LabelImg, clique no botão de formato até mostrar "
+            "'YOLO' e salve de novo (Ctrl+S)."
+        )
     return resumo
 
 

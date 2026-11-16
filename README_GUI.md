@@ -143,14 +143,24 @@ YOLO `.txt`; o código da ferramenta não é alterado.
    no `PATH`. Nenhum anotador é instalado pela aplicação. **Abrir pasta do
    lote** funciona com qualquer ferramenta que grave YOLO `.txt`.
 
-   **LabelImg não funciona em Python 3.12 ou mais novo.** Testado em 16/11/2026
-   com `pipx install labelImg` (versão 1.8.6, a última publicada) em Python
-   3.14: ele não abre, porque importa `distutils`, removido no Python 3.12. O
-   código instalado também chama `drawRect`/`drawLine` com coordenadas
-   fracionárias, o erro conhecido que derruba o programa ao desenhar caixas no
-   Python 3.10+. Como a regra do projeto é não alterar o código do LabelImg, use
-   um anotador mantido que exporte YOLO, como o X-AnyLabeling, ou o LabelImg
-   num ambiente com Python 3.9.
+   **Instalação do LabelImg (validada em 16/11/2026).** O LabelImg 1.8.6, a
+   última versão publicada, só funciona em **Python 3.9**: em 3.12+ ele não abre
+   (importa `distutils`) e em 3.10+ falha ao desenhar caixas (coordenadas
+   fracionárias no PyQt5). Instale-o num ambiente isolado, sem tocar na `.venv`
+   do aplicativo (PySide6):
+
+   ```bash
+   pipx install uv
+   uv tool install --python 3.9 labelImg
+   ```
+
+   O `uv` baixa um Python 3.9 próprio e cria o comando `labelImg` no `PATH`;
+   o aplicativo o encontra sozinho. Validado com Python 3.9.25, PyQt5 5.15.11
+   e lxml 6.1.3 (relatório em `reports/validacao-labelimg-e6.md`).
+
+   **Atenção ao formato:** o LabelImg abre em **PascalVOC**. Antes de salvar,
+   clique no botão de formato (abaixo de *Save*) até aparecer **YOLO**. Arquivos
+   `.xml` não são importados; a importação avisa quando encontra só `.xml`.
 3. **Importar anotações**: valida cada `.txt` (5 valores por linha, ID dentro
    do esquema, coordenadas normalizadas, caixa dentro da imagem, sem
    duplicatas) e grava no banco. Arquivos válidos marcam a imagem como
