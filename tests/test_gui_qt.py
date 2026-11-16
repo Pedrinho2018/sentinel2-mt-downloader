@@ -468,6 +468,19 @@ class TestGuiQt(TestCase):
         self.app.processEvents()
         self.app.processEvents()
 
+    def test_abrir_laboratorio_nao_cria_banco_nem_configuracao(self) -> None:
+        raiz = patch.object(gui, "ROOT", self.pasta)
+        raiz.start()
+        self.addCleanup(raiz.stop)
+        config = Path(self.janela.output_path.text())
+
+        self.janela._navegar(self.janela._indice_pagina("Laboratório de IA"))
+
+        self.assertFalse(config.exists())
+        self.assertFalse((self.pasta / "data/laboratorio").exists())
+        self.assertEqual(self.janela.lab_projeto.count(), 0)
+        self.assertIn("Crie um projeto", self.janela.lab_info_projeto.text())
+
     def test_laboratorio_cria_projeto_e_versiona_classes(self) -> None:
         self._preparar_laboratorio()
         self.janela._navegar(self.janela._indice_pagina("Laboratório de IA"))
