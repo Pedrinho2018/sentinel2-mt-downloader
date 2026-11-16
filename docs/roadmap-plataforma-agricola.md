@@ -304,3 +304,27 @@ instalado nesta máquina; o lançamento foi testado com executável simulado).
 O argumento de linha de comando do LabelImg (`imagens classes.txt saída`) segue
 a documentação do projeto; a escolha do formato YOLO continua manual na
 ferramenta.
+## Verificação do modelo atual com dados reais (16/11/2026)
+
+Execução real do `best.pt` (GPU) sobre os 281 recortes locais, com o
+`catalogo/patches.csv` reconstruído a partir dos `metadata.json` existentes, sem
+regravar rasters:
+
+- 198 recortes analisados; 83 ficaram fora porque não intersectam a bbox de MT
+  configurada (filtro esperado). Tempo: ~25 s.
+- **Nenhuma detecção acima do limiar padrão (0,25).** Em 10 recortes amostrados,
+  sem limiar, a maior confiança ficou entre 0,018 e 0,055. O pipeline funciona; o
+  modelo praticamente não reconhece nada nesses recortes. Causa provável: domínio
+  de treino diferente (sensor/composição temporal, stretch RGB ou escala).
+- **Classes do peso:** 22 classes de detecção (`soja`, `milho`, `algodao`,
+  `cana_de_acucar`, `arroz`, `cafe`, `plantio_generico`, `talhao_preparo_solo`,
+  `talhao_colhido`, `pousio_palhada`, `pastagem`, `floresta_nativa`,
+  `silvicultura`, `vegetacao_secundaria`, `agua`, `solo_exposto`, `area_urbana`,
+  `estrada`, `nuvem`, `sombra_nuvem`, `area_queimada`, `plantio_genericow`). A
+  última parece erro de digitação de `plantio_generico`. A documentação que
+  descrevia o peso como "detector de talhões" estava imprecisa; a tela de
+  resultados passou a tratar essas classes como "classe do modelo, não validada".
+
+Consequência para o plano: antes de qualquer uso agrícola, o modelo precisa ser
+reavaliado ou retreinado com dados do próprio pipeline (E6–E9). O `best.pt` não
+foi alterado.

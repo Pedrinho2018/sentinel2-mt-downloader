@@ -37,9 +37,25 @@ AVISO_AREA = (
     "detectou talhões, mas não medem área: não convertemos caixas em hectares."
 )
 AVISO_CULTURA = (
-    "Cultura não determinada. Nenhum modelo de classificação de culturas foi aprovado "
-    "para uso; o modelo atual detecta talhões e não identifica soja, milho ou algodão."
+    "Cultura não determinada. Nenhum modelo foi validado e aprovado para identificar "
+    "culturas. O modelo ativo é de detecção por caixas; mesmo que os nomes das classes "
+    "dele citem culturas, esses rótulos não são apresentados como cultura identificada."
 )
+CLASSES_DE_CULTURA = {
+    "soja", "milho", "algodao", "cana_de_acucar", "arroz", "cafe", "feijao", "trigo",
+}
+
+
+def aviso_classes_modelo(classes: Iterable[str]) -> str:
+    """Alerta quando um modelo de detecção usa nomes de culturas como classes."""
+    culturas = sorted({str(classe) for classe in classes} & CLASSES_DE_CULTURA)
+    if not culturas:
+        return ""
+    return (
+        "As classes deste modelo incluem nomes de culturas (" + ", ".join(culturas) + "). "
+        "Elas aparecem como \"classe do modelo\" e não foram validadas em campo: "
+        "não as interprete como cultura identificada."
+    )
 
 
 @dataclass(frozen=True)
@@ -323,7 +339,7 @@ def exportar_csv(resultado: ResultadoVisualizacao, destino: Path) -> int:
 def exportar_json(resultado: ResultadoVisualizacao, destino: Path) -> None:
     dados = dict(resultado.dados)
     dados["observacoes"] = {
-        "tarefa": "detecção de talhões por caixas em pixels",
+        "tarefa": "detecção por caixas em pixels (classes do modelo não validadas)",
         "area": AVISO_AREA,
         "cultura": AVISO_CULTURA,
     }
