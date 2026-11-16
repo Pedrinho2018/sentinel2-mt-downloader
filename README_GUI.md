@@ -125,6 +125,42 @@ virão nas próximas entregas (veja `docs/roadmap-plataforma-agricola.md`).
   agosto, ex.: `2025/2026`), nuvens, estado de rotulagem, só duplicatas e só
   com problema. A grade mostra miniaturas em cache.
 
+### Rotulagem
+
+O cartão **Rotulagem** muda conforme o tipo do projeto.
+
+**Detecção (caixas)**: a anotação é feita em uma ferramenta externa que grave
+YOLO `.txt`; o código da ferramenta não é alterado.
+
+1. **Preparar lote**: copia as imagens pendentes ou a revisar (ou só as
+   selecionadas) para `laboratorio.pasta/projetos/<id>/rotulagem/lote-atual/images`,
+   com nome `<patch_id>.png`, grava `classes.txt` com o esquema atual (o ID
+   YOLO é a posição da classe na lista) e coloca em `labels/` as anotações já
+   importadas, para revisão e correção. Duplicatas e imagens com problema de
+   integridade ficam fora. Os arquivos do pipeline nunca são entregues ao
+   anotador.
+2. **Abrir no anotador**: abre o LabelImg ou o X-AnyLabeling, se algum estiver
+   no `PATH`. No LabelImg, confirme o formato **YOLO** antes de salvar. Nenhum
+   anotador é instalado pela aplicação. O LabelImg está sem manutenção (última
+   versão 1.8.6) e depende de PyQt5; instale-o fora da `.venv` da aplicação,
+   por exemplo com `pipx install labelImg`. **Abrir pasta do lote** funciona com
+   qualquer ferramenta.
+3. **Importar anotações**: valida cada `.txt` (5 valores por linha, ID dentro
+   do esquema, coordenadas normalizadas, caixa dentro da imagem, sem
+   duplicatas) e grava no banco. Arquivos válidos marcam a imagem como
+   rotulada; com erro, ela vai para **revisar** com as mensagens por linha no
+   painel de detalhes. Arquivo vazio significa "rotulada, sem talhões". Imagens
+   sem `.txt` continuam pendentes. Se o anotador acrescentar classes ao
+   `classes.txt`, a importação avisa e não as aceita; use **Editar classes**.
+
+**Classificação (uma classe por imagem)**: selecione imagens na grade
+(Ctrl/Shift para várias), escolha a classe e clique em **Aplicar às
+selecionadas**; **Limpar rótulo** devolve a imagem para pendente. Não há caixas.
+
+Ao criar uma nova versão de classes, rótulos que deixam de ser compatíveis vão
+para **revisar**: na classificação, quando a classe sumiu; na detecção, quando
+as classes já usadas mudaram de posição (o que trocaria o significado dos IDs).
+
 Banco, miniaturas e cópias externas ficam em `laboratorio.pasta` (padrão
 `data/laboratorio`; nos pacotes Linux, `~/.local/share/sentinel2-mt/laboratorio`).
 O banco tem permissão restrita e guarda somente metadados, hashes e caminhos.

@@ -153,7 +153,7 @@ Princípios:
 | E3 | Assistente de download (feito) | P0 | passos 1–7 navegáveis; tabela de cenas a partir de catalogação existente; progresso estruturado `[PROGRESSO] {json}` da CLI (bytes, total, velocidade); cancelar remove `.part`; retomada `Range` testada com servidor fake; limpeza de `.part` órfãos com confirmação |
 | E4 | Resultados agrícolas (feito) | P0 | abas "Talhões (detecção)" e "Culturas (classificação)"; culturas exibem "não determinada" sem modelo aprovado; histórico filtrável; exportação CSV/JSON; nenhum texto menciona hectares |
 | E5 | Datasets do Laboratório (feito) | P1 | criar projeto com tipo e esquema de classes versionado; importar patches do catálogo sem copiar GeoTIFF; SHA-256 e detecção de duplicatas; verificação de integridade; filtros por região, data, nuvem e estado de rotulagem |
-| E6 | Rotulagem | P1 | exportar lote para anotador externo; detectar LabelImg/X-AnyLabeling instalados; importar `.txt`; validador YOLO com mensagens por linha; contagem rotulados/pendentes; tela de atribuição de classe para classificação |
+| E6 | Rotulagem (feito) | P1 | exportar lote para anotador externo; detectar LabelImg/X-AnyLabeling instalados; importar `.txt`; validador YOLO com mensagens por linha; contagem rotulados/pendentes; tela de atribuição de classe para classificação |
 | E7 | Preparação do treino | P2 | split por grupo espacial sem vazamento (teste: nenhum grupo em dois splits); relatório de desbalanceamento; revisão antes de iniciar; `data.yaml` gerado em pasta versionada |
 | E8 | Execução e painel de treino | P2 | treino em processo separado; épocas, perdas, métricas, CPU/GPU/RAM (psutil/torch) e logs na GUI; cancelamento seguro; retomada só com checkpoint; testado com treinador fake |
 | E9 | Avaliação e registro de modelos | P3 | métricas de detecção (P, R, mAP50, mAP50‑95, matriz) e classificação (accuracy, P/R/F1 por classe, por região/safra); exemplos FP/FN; registro com SHA-256, dataset e config; aprovação manual; ativação e rollback sem tocar no `best.pt` original |
@@ -278,3 +278,29 @@ ficou coberto pela busca textual e pela safra, sem intervalo de datas dedicado.
 Dívida técnica: `src/gerar_config_gui.py` passou de 3.500 linhas. Antes da E6,
 convém extrair as páginas (Início, Baixar imagens, Resultados, Laboratório)
 para módulos próprios, mantendo a lógica nos serviços.
+
+## 10. Entrega E6 — o que mudou
+
+- `laboratorio/rotulagem.py`: validador YOLO com mensagens por linha; lote de
+  rotulagem com cópias das imagens, `classes.txt` e anotações existentes para
+  correção; importação validada contra o esquema do lote; detecção de
+  anotadores no `PATH` (LabelImg, X-AnyLabeling) sem instalação automática.
+- `laboratorio/projetos.py`: tabelas de anotações de detecção e rótulos de
+  classificação, com tipo do projeto obrigatório; revalidação ao mudar o
+  esquema.
+- GUI: módulo separado `src/gui_rotulagem.py` (painel de rotulagem), para não
+  aumentar `gerar_config_gui.py`; grade com seleção múltipla e legendas de
+  classe/caixas/revisar.
+
+Decisões:
+- **Cópia, não link**, nas imagens do lote: o anotador nunca recebe os
+  arquivos do pipeline. O custo é disco (cerca de 0,5 MB por recorte 512×512).
+- **LabelImg opcional**: ele foi arquivado (última versão 1.8.6) e depende de
+  PyQt5, que conflitaria com PySide6 na mesma `.venv`. A integração é por
+  contrato de arquivos YOLO e funciona com qualquer anotador.
+
+Não verificado: abertura real do LabelImg ou do X-AnyLabeling (nenhum está
+instalado nesta máquina; o lançamento foi testado com executável simulado).
+O argumento de linha de comando do LabelImg (`imagens classes.txt saída`) segue
+a documentação do projeto; a escolha do formato YOLO continua manual na
+ferramenta.

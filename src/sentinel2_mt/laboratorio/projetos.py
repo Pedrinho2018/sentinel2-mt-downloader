@@ -162,6 +162,29 @@ class RepositorioLaboratorio:
                     PRIMARY KEY (projeto_id, patch_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_imagens_sha ON imagens(projeto_id, sha256);
+                CREATE TABLE IF NOT EXISTS anotacoes_deteccao (
+                    projeto_id INTEGER NOT NULL,
+                    patch_id TEXT NOT NULL,
+                    versao_esquema INTEGER NOT NULL,
+                    conteudo TEXT NOT NULL,
+                    caixas INTEGER NOT NULL,
+                    erros_json TEXT NOT NULL DEFAULT '[]',
+                    sha256_imagem TEXT NOT NULL,
+                    importado_em TEXT NOT NULL,
+                    PRIMARY KEY (projeto_id, patch_id),
+                    FOREIGN KEY (projeto_id, patch_id) REFERENCES imagens(projeto_id, patch_id)
+                        ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS rotulos_classificacao (
+                    projeto_id INTEGER NOT NULL,
+                    patch_id TEXT NOT NULL,
+                    classe TEXT NOT NULL,
+                    versao_esquema INTEGER NOT NULL,
+                    atualizado_em TEXT NOT NULL,
+                    PRIMARY KEY (projeto_id, patch_id),
+                    FOREIGN KEY (projeto_id, patch_id) REFERENCES imagens(projeto_id, patch_id)
+                        ON DELETE CASCADE
+                );
                 """
             )
         os.chmod(self.caminho_banco, 0o600)
@@ -241,6 +264,7 @@ class RepositorioLaboratorio:
                 "INSERT INTO esquemas_classes VALUES (?, ?, ?, ?)",
                 (projeto_id, atual.versao + 1, json.dumps(list(classes_validas)), criado),
             )
+        self.revalidar_rotulos(projeto_id)
         return EsquemaClasses(projeto_id, atual.versao + 1, classes_validas, criado)
 
     # ------------------------------------------------------------------ imagens
@@ -310,6 +334,141 @@ class RepositorioLaboratorio:
                 "UPDATE imagens SET duplicata_de = ? WHERE projeto_id = ? AND patch_id = ?",
                 atualizacoes,
             )
+
+    # ------------------------------------------------------------------ rótulos
+
+    def _exigir_tipo(self, projeto_id: int, tipo: str) -> Projeto:
+        projeto = self.obter_projeto(projeto_id)
+        if projeto.tipo != tipo:
+            raise ValueError(
+                "Este projeto é de "
+                + ("detecção (caixas)" if projeto.tipo == "deteccao" else "classificação (uma classe por imagem)")
+                + "; rótulos de outro tipo não são aceitos."
+            )
+        return projeto
+
+    def _definir_estado(self, conexao, projeto_id: int, patch_ids: list[str], estado: str) -> None:
+        if estado not in ESTADOS_ROTULO:
+            raise ValueError(f"Estado de rotulagem inválido: {estado}")
+        conexao.executemany(
+            "UPDATE imagens SET estado_rotulo = ? WHERE projeto_id = ? AND patch_id = ?",
+            [(estado, projeto_id, patch_id) for patch_id in patch_ids],
+        )
+
+    def _ids_existentes(self, conexao, projeto_id: int, patch_ids: list[str]) -> list[str]:
+        existentes = {
+            linha["patch_id"]
+            for linha in conexao.execute("SELECT patch_id FROM imagens WHERE projeto_id = ?", (projeto_id,))
+        }
+        faltantes = [patch_id for patch_id in patch_ids if patch_id not in existentes]
+        if faltantes:
+            raise ValueError(f"Imagem não pertence ao projeto: {faltantes[0]}")
+        return patch_ids
+
+    def rotular_classificacao(self, projeto_id: int, patch_ids: list[str], classe: str) -> int:
+        """Atribui uma classe do esquema atual às imagens (somente projetos de classificação)."""
+        self._exigir_tipo(projeto_id, "classificacao")
+        esquema = self.esquema_atual(projeto_id)
+        if classe not in esquema.classes:
+            raise ValueError(f"A classe '{classe}' não existe no esquema v{esquema.versao}.")
+        agora = _agora()
+        with self._conectar() as conexao:
+            ids = self._ids_existentes(conexao, projeto_id, list(patch_ids))
+            conexao.executemany(
+                """INSERT INTO rotulos_classificacao VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(projeto_id, patch_id) DO UPDATE SET classe = excluded.classe,
+                versao_esquema = excluded.versao_esquema, atualizado_em = excluded.atualizado_em""",
+                [(projeto_id, patch_id, classe, esquema.versao, agora) for patch_id in ids],
+            )
+            self._definir_estado(conexao, projeto_id, ids, "rotulada")
+        return len(ids)
+
+    def limpar_rotulos(self, projeto_id: int, patch_ids: list[str]) -> None:
+        """Volta as imagens para 'pendente' removendo rótulos e anotações."""
+        with self._conectar() as conexao:
+            ids = self._ids_existentes(conexao, projeto_id, list(patch_ids))
+            for tabela in ("rotulos_classificacao", "anotacoes_deteccao"):
+                conexao.executemany(
+                    f"DELETE FROM {tabela} WHERE projeto_id = ? AND patch_id = ?",
+                    [(projeto_id, patch_id) for patch_id in ids],
+                )
+            self._definir_estado(conexao, projeto_id, ids, "pendente")
+
+    def rotulos_classificacao(self, projeto_id: int) -> dict[str, tuple[str, int]]:
+        with self._conectar() as conexao:
+            linhas = conexao.execute(
+                "SELECT patch_id, classe, versao_esquema FROM rotulos_classificacao WHERE projeto_id = ?",
+                (projeto_id,),
+            ).fetchall()
+        return {l["patch_id"]: (l["classe"], l["versao_esquema"]) for l in linhas}
+
+    def registrar_anotacao_deteccao(
+        self,
+        projeto_id: int,
+        patch_id: str,
+        versao_esquema: int,
+        conteudo: str,
+        caixas: int,
+        erros: list[str],
+        sha256_imagem: str,
+    ) -> str:
+        """Guarda o .txt YOLO importado; com erros, a imagem vai para 'revisar'."""
+        self._exigir_tipo(projeto_id, "deteccao")
+        estado = "revisar" if erros else "rotulada"
+        with self._conectar() as conexao:
+            self._ids_existentes(conexao, projeto_id, [patch_id])
+            conexao.execute(
+                """INSERT INTO anotacoes_deteccao VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(projeto_id, patch_id) DO UPDATE SET versao_esquema = excluded.versao_esquema,
+                conteudo = excluded.conteudo, caixas = excluded.caixas, erros_json = excluded.erros_json,
+                sha256_imagem = excluded.sha256_imagem, importado_em = excluded.importado_em""",
+                (projeto_id, patch_id, versao_esquema, conteudo, caixas,
+                 json.dumps(erros, ensure_ascii=False), sha256_imagem, _agora()),
+            )
+            self._definir_estado(conexao, projeto_id, [patch_id], estado)
+        return estado
+
+    def anotacoes_deteccao(self, projeto_id: int) -> dict[str, dict]:
+        with self._conectar() as conexao:
+            linhas = conexao.execute(
+                "SELECT * FROM anotacoes_deteccao WHERE projeto_id = ?", (projeto_id,)
+            ).fetchall()
+        return {
+            l["patch_id"]: {
+                "versao_esquema": l["versao_esquema"],
+                "conteudo": l["conteudo"],
+                "caixas": l["caixas"],
+                "erros": json.loads(l["erros_json"]),
+                "sha256_imagem": l["sha256_imagem"],
+                "importado_em": l["importado_em"],
+            }
+            for l in linhas
+        }
+
+    def revalidar_rotulos(self, projeto_id: int) -> int:
+        """Após nova versão do esquema, marca 'revisar' o que deixou de ser compatível.
+
+        Classificação: a classe precisa existir no esquema atual. Detecção: os IDs
+        YOLO são posições na lista; se as classes já usadas mudaram de posição ou
+        sumiram, as caixas antigas apontariam para outra classe.
+        """
+        projeto = self.obter_projeto(projeto_id)
+        esquemas = {e.versao: e.classes for e in self.listar_esquemas(projeto_id)}
+        atual = self.esquema_atual(projeto_id).classes
+        marcadas: list[str] = []
+        if projeto.tipo == "classificacao":
+            for patch_id, (classe, _versao) in self.rotulos_classificacao(projeto_id).items():
+                if classe not in atual:
+                    marcadas.append(patch_id)
+        else:
+            for patch_id, anotacao in self.anotacoes_deteccao(projeto_id).items():
+                antigas = esquemas.get(anotacao["versao_esquema"], ())
+                if tuple(atual[: len(antigas)]) != tuple(antigas):
+                    marcadas.append(patch_id)
+        if marcadas:
+            with self._conectar() as conexao:
+                self._definir_estado(conexao, projeto_id, marcadas, "revisar")
+        return len(marcadas)
 
     def contagens(self, projeto_id: int) -> dict[str, int]:
         imagens = self.listar_imagens(projeto_id)
