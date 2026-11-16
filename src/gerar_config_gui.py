@@ -2144,6 +2144,9 @@ class MainWindow(QtWidgets.QMainWindow):
             ["Classe do modelo", "Confiança", "Caixa (pixels x1, y1, x2, y2)"]
         )
         self.analise_deteccoes.horizontalHeader().setStretchLastSection(True)
+        self.analise_deteccoes.horizontalHeader().setSectionResizeMode(
+            0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+        )
         self.analise_deteccoes.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.analise_deteccoes.setMinimumHeight(140)
         direita.addWidget(self.analise_deteccoes, 2)
