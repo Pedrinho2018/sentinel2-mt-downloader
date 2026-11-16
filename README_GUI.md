@@ -131,6 +131,31 @@ inexistente e não executa inferência. Ultralytics e Torch são necessários pa
 o detector; Matplotlib é necessário quando o relatório PDF está habilitado.
 Consulte [docs/modelo-ia.md](docs/modelo-ia.md) antes de substituir o peso.
 
+### Tela de resultados
+
+A página **Análise da região** separa os resultados em duas abas:
+
+- **Talhões (detecção)**: lista dos recortes analisados (data de aquisição,
+  número de detecções), imagem RGB original e resultado da IA sobreposto lado a
+  lado, tabela de detecções do recorte (classe, confiança e caixa em pixels),
+  resumo por classe e, quando NDVI/EVI foram baixados, a média, o mínimo e o
+  máximo desses índices **no recorte inteiro** (não por talhão). Os índices só
+  aparecem para coleções com escala documentada; para `S2-16D-2`, o STAC do INPE
+  informa escala 0,0001 e nodata -9999, e a leitura respeita a máscara do
+  GeoTIFF multibanda.
+- **Culturas (classificação)**: mostra **Cultura não determinada** enquanto não
+  houver um modelo de classificação aprovado. O modelo atual detecta talhões e
+  não identifica soja, milho ou algodão.
+
+O cabeçalho informa região, período, cenas, modelo e versão (com o início do
+SHA-256), dispositivo e data da análise. **Exportar CSV** grava uma linha por
+detecção, com caixas em pixels; **Exportar JSON** grava o resultado com
+observações sobre área e cultura. Nenhuma exportação contém área.
+
+Em **Histórico**, filtre por região, cena, modelo ou ID e por período (30 dias,
+12 meses); **Abrir resultado** carrega a análise selecionada na tela de
+resultados. O clique duplo continua abrindo o PDF.
+
 O histórico guarda metadados e caminhos, não os GeoTIFFs. As caixas e contagens
 da tela não representam área agrícola: uma bbox seleciona a região de consulta,
 mas, sem escala e geometria georreferenciada validadas para as detecções, não é

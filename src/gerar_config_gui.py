@@ -15,6 +15,18 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from sentinel2_mt.config_builder import GeradorConfiguracao, gerar_config, salvar_config as persistir_config
 from sentinel2_mt.configuracao import ConfiguracaoProjeto
 from sentinel2_mt.analise.historico import RepositorioHistoricoAnalises
+from sentinel2_mt.analise.resultados import (
+    AVISO_AREA,
+    AVISO_CULTURA,
+    ItemResultado,
+    ResultadoVisualizacao,
+    carregar_resultado,
+    exportar_csv,
+    exportar_json,
+    filtrar_historico,
+    indicadores_vegetacao,
+    modelo_classificacao_aprovado,
+)
 from sentinel2_mt.gui_support import (
     LocalConfigStore,
     montar_argumentos_operacao,
@@ -545,6 +557,9 @@ class MapaWidget(QWebEngineView):
         """
 
 
+ALTURA_IMAGEM_RESULTADO = 230
+
+
 class _PontePainel(QtCore.QObject):
     """Entrega o resumo calculado em segundo plano à thread da interface."""
 
@@ -574,7 +589,7 @@ class MainWindow(QtWidgets.QMainWindow):
         ("Baixar imagens", "Escolha o período, as cenas e acompanhe o download"),
         ("Dados e qualidade", "Ajuste STAC, bandas e filtros"),
         ("Google Drive", "Configure OAuth e sincronização"),
-        ("Análise da região", "Consulte detecções, imagens e estatísticas"),
+        ("Análise da região", "Resultados agrícolas: talhões detectados e culturas"),
         ("Histórico", "Acesse análises e relatórios locais"),
         ("Configuração", "Revise YAML e perfis locais"),
         ("Sobre", "Conheça o aplicativo e seu fluxo de trabalho"),
@@ -2011,36 +2026,129 @@ class MainWindow(QtWidgets.QMainWindow):
         pagina = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(pagina)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setSpacing(12)
 
-        resumo = Cartao(
-            "Análise da região",
-            "As contagens vêm de caixas detectadas; caixas não equivalem à área real dos talhões.",
-        )
-        resumo.layout_principal.addWidget(self.analise_info)
-        resumo.layout_principal.addWidget(self.analise_tabela)
-        layout.addWidget(resumo, 1)
-
-        imagens = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        original = Cartao("Imagem RGB original")
-        original.layout_principal.addWidget(self.analise_original, 1)
-        analisada = Cartao("Imagem com detecções")
-        analisada.layout_principal.addWidget(self.analise_anotada, 1)
-        imagens.addWidget(original)
-        imagens.addWidget(analisada)
-        layout.addWidget(imagens, 2)
-        linha_relatorio = QtWidgets.QHBoxLayout()
+        resumo = Cartao("Resultado da análise")
+        topo = QtWidgets.QHBoxLayout()
+        topo.addWidget(self.analise_info, 1)
+        botoes = QtWidgets.QVBoxLayout()
+        self.btn_exportar_csv = botao("Exportar CSV")
+        self.btn_exportar_csv.setToolTip("Uma linha por detecção, com caixas em pixels")
+        self.btn_exportar_csv.clicked.connect(lambda: self._exportar_resultado("csv"))
+        self.btn_exportar_json = botao("Exportar JSON")
+        self.btn_exportar_json.clicked.connect(lambda: self._exportar_resultado("json"))
         self.btn_relatorio = botao("Abrir relatório PDF", "primaryButton")
-        self.btn_relatorio.setEnabled(False)
         self.btn_relatorio.clicked.connect(self._abrir_relatorio_analise)
         self.btn_salvar_relatorio = botao("Salvar PDF")
-        self.btn_salvar_relatorio.setEnabled(False)
         self.btn_salvar_relatorio.clicked.connect(self._salvar_relatorio_analise)
-        linha_relatorio.addStretch()
-        linha_relatorio.addWidget(self.btn_salvar_relatorio)
-        linha_relatorio.addWidget(self.btn_relatorio)
-        layout.addLayout(linha_relatorio)
+        for item in (
+            self.btn_relatorio, self.btn_salvar_relatorio, self.btn_exportar_csv, self.btn_exportar_json
+        ):
+            item.setEnabled(False)
+            botoes.addWidget(item)
+        topo.addLayout(botoes)
+        resumo.layout_principal.addLayout(topo)
+        layout.addWidget(resumo)
+
+        self.analise_abas = QtWidgets.QTabWidget()
+        self.analise_abas.addTab(self._aba_talhoes(), "Talhões (detecção)")
+        self.analise_abas.addTab(self._aba_culturas(), "Culturas (classificação)")
+        layout.addWidget(self.analise_abas, 1)
         return pagina
+
+    def _aba_talhoes(self) -> QtWidgets.QWidget:
+        aba = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(aba)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        esquerda = QtWidgets.QVBoxLayout()
+        rotulo = QtWidgets.QLabel("Recortes analisados")
+        rotulo.setObjectName("cardTitle")
+        esquerda.addWidget(rotulo)
+        self.analise_itens = QtWidgets.QListWidget()
+        self.analise_itens.currentRowChanged.connect(self._exibir_item_resultado)
+        esquerda.addWidget(self.analise_itens, 2)
+        rotulo_classes = QtWidgets.QLabel("Resumo por classe")
+        rotulo_classes.setObjectName("cardTitle")
+        esquerda.addWidget(rotulo_classes)
+        esquerda.addWidget(self.analise_tabela, 1)
+        aviso = QtWidgets.QLabel(AVISO_AREA)
+        aviso.setObjectName("cardHelp")
+        aviso.setWordWrap(True)
+        esquerda.addWidget(aviso)
+        painel_esquerdo = QtWidgets.QWidget()
+        painel_esquerdo.setLayout(esquerda)
+
+        direita = QtWidgets.QVBoxLayout()
+        imagens = QtWidgets.QHBoxLayout()
+        for titulo, rotulo_imagem in (
+            ("Imagem RGB original", self.analise_original),
+            ("Resultado da IA sobreposto", self.analise_anotada),
+        ):
+            coluna = QtWidgets.QVBoxLayout()
+            legenda = QtWidgets.QLabel(titulo)
+            legenda.setObjectName("cardHelp")
+            coluna.addWidget(legenda)
+            # A imagem não dita o tamanho do layout; ela é ajustada ao espaço disponível.
+            rotulo_imagem.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Fixed
+            )
+            rotulo_imagem.setMinimumHeight(0)
+            rotulo_imagem.setFixedHeight(ALTURA_IMAGEM_RESULTADO)
+            coluna.addWidget(rotulo_imagem)
+            imagens.addLayout(coluna)
+        direita.addLayout(imagens)
+        self.analise_item_info = QtWidgets.QLabel("")
+        self.analise_item_info.setWordWrap(True)
+        direita.addWidget(self.analise_item_info)
+        self.analise_deteccoes = QtWidgets.QTableWidget(0, 3)
+        self.analise_deteccoes.setHorizontalHeaderLabels(
+            ["Classe", "Confiança", "Caixa (pixels x1, y1, x2, y2)"]
+        )
+        self.analise_deteccoes.horizontalHeader().setStretchLastSection(True)
+        self.analise_deteccoes.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.analise_deteccoes.setMinimumHeight(140)
+        direita.addWidget(self.analise_deteccoes, 2)
+        self.analise_vegetacao = QtWidgets.QLabel("")
+        self.analise_vegetacao.setObjectName("cardHelp")
+        self.analise_vegetacao.setWordWrap(True)
+        direita.addWidget(self.analise_vegetacao)
+        conteudo_direito = QtWidgets.QWidget()
+        conteudo_direito.setLayout(direita)
+        # Rolagem evita sobreposição quando a janela é baixa.
+        painel_direito = QtWidgets.QScrollArea()
+        painel_direito.setWidgetResizable(True)
+        painel_direito.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        painel_direito.setWidget(conteudo_direito)
+
+        divisor = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        divisor.addWidget(painel_esquerdo)
+        divisor.addWidget(painel_direito)
+        divisor.setSizes([360, 820])
+        layout.addWidget(divisor)
+        return aba
+
+    def _aba_culturas(self) -> QtWidgets.QWidget:
+        aba = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(aba)
+        layout.setContentsMargins(16, 16, 16, 16)
+        self.analise_cultura_estado = QtWidgets.QLabel("Cultura não determinada")
+        self.analise_cultura_estado.setObjectName("statValue")
+        self.analise_cultura_texto = QtWidgets.QLabel(AVISO_CULTURA.split(". ", 1)[-1])
+        self.analise_cultura_texto.setWordWrap(True)
+        explicacao = QtWidgets.QLabel(
+            "Detecção de talhões responde onde há talhões na imagem. Classificação de "
+            "culturas responde qual cultura ocupa cada talhão e exige outro modelo, "
+            "treinado e avaliado em regiões e safras independentes. Quando um modelo de "
+            "classificação for aprovado no Laboratório de IA, os resultados aparecerão aqui."
+        )
+        explicacao.setObjectName("cardHelp")
+        explicacao.setWordWrap(True)
+        layout.addWidget(self.analise_cultura_estado)
+        layout.addWidget(self.analise_cultura_texto)
+        layout.addWidget(explicacao)
+        layout.addStretch()
+        return aba
 
     def _pagina_historico(self) -> QtWidgets.QWidget:
         pagina = QtWidgets.QWidget()
@@ -2050,10 +2158,28 @@ class MainWindow(QtWidgets.QMainWindow):
             "Histórico local",
             "O banco guarda somente metadados e caminhos; GeoTIFFs permanecem fora do SQLite.",
         )
+        filtros = QtWidgets.QHBoxLayout()
+        self.historico_filtro = QtWidgets.QLineEdit()
+        self.historico_filtro.setPlaceholderText("Filtrar por região, cena, modelo ou ID")
+        self.historico_filtro.setClearButtonEnabled(True)
+        self.historico_filtro.textChanged.connect(self._aplicar_filtro_historico)
+        self.historico_periodo = QtWidgets.QComboBox()
+        for texto, dias in (("Todas as datas", 0), ("Últimos 30 dias", 30), ("Últimos 12 meses", 365)):
+            self.historico_periodo.addItem(texto, dias)
+        self.historico_periodo.currentIndexChanged.connect(self._aplicar_filtro_historico)
+        filtros.addWidget(self.historico_filtro, 1)
+        filtros.addWidget(self.historico_periodo)
+        cartao.layout_principal.addLayout(filtros)
         cartao.layout_principal.addWidget(self.historico_tabela, 1)
+        acoes = QtWidgets.QHBoxLayout()
         atualizar = botao("Atualizar histórico")
         atualizar.clicked.connect(self._recarregar_historico)
-        cartao.layout_principal.addWidget(atualizar)
+        self.btn_abrir_historico = botao("Abrir resultado", "primaryButton")
+        self.btn_abrir_historico.clicked.connect(self._abrir_resultado_historico)
+        acoes.addWidget(atualizar)
+        acoes.addStretch()
+        acoes.addWidget(self.btn_abrir_historico)
+        cartao.layout_principal.addLayout(acoes)
         layout.addWidget(cartao)
         return pagina
 
@@ -2389,21 +2515,28 @@ class MainWindow(QtWidgets.QMainWindow):
         self._resultado_pendente = ROOT / caminho
 
     def _carregar_resultado_analise(self, caminho: Path) -> None:
-        _, raiz_analises = self._raizes_artefatos()
+        raiz_dataset, raiz_analises = self._raizes_artefatos()
         caminho = self._resolver_em_raiz(caminho, raiz_analises, {".json"})
-        if caminho.stat().st_size > 10 * 1024 * 1024:
-            raise ValueError("resultado.json excede o limite de 10 MB")
-        dados = json.loads(caminho.read_text(encoding="utf-8"))
-        if not isinstance(dados, dict) or "estatisticas" not in dados:
-            raise ValueError("estrutura JSON inesperada")
+        resultado = carregar_resultado(
+            caminho, raiz_projeto=ROOT, raiz_dataset=raiz_dataset, raiz_analises=raiz_analises
+        )
+        dados = resultado.dados
         self._ultimo_resultado = dados
-        estatisticas = dados["estatisticas"]
-        periodo = f"{dados.get('periodo_inicio', '—')} a {dados.get('periodo_fim', '—')}"
+        self._resultado_visual: ResultadoVisualizacao | None = resultado
+        estatisticas = resultado.estatisticas
+        periodo = f"{resultado.periodo_inicio or '—'} a {resultado.periodo_fim or '—'}"
+        modelo = resultado.modelo_versao or "versão não informada"
+        if resultado.modelo_nome:
+            modelo = f"{resultado.modelo_nome} {modelo}"
+        hash_curto = resultado.modelo_sha256[:12] if resultado.modelo_sha256 else "—"
         self.analise_info.setText(
-            f"Região: {dados.get('regiao', '—')}\nPeríodo: {periodo}\n"
-            f"Cenas: {', '.join(dados.get('scene_ids', [])) or '—'}\n"
-            f"Dispositivo de processamento: {dados.get('dispositivo', '—')}\n"
-            f"Detecções: {estatisticas.get('total_deteccoes', 0)}"
+            f"Região: {resultado.regiao or '—'}\nPeríodo: {periodo}\n"
+            f"Cenas: {', '.join(resultado.cenas) or '—'}\n"
+            f"Modelo: {modelo} (detecção de talhões; SHA-256 {hash_curto}…)\n"
+            f"Dispositivo de processamento: {resultado.dispositivo or '—'}\n"
+            f"Analisado em: {resultado.criado_em or '—'}\n"
+            f"Detecções: {estatisticas.get('total_deteccoes', 0)} em "
+            f"{len(resultado.itens) or estatisticas.get('total_tiles', 0)} recorte(s)"
         )
         por_classe = estatisticas.get("por_classe", {})
         self.analise_tabela.setRowCount(len(por_classe))
@@ -2417,20 +2550,123 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             for coluna, valor in enumerate(valores):
                 self.analise_tabela.setItem(linha, coluna, QtWidgets.QTableWidgetItem(valor))
-        raiz_dataset, raiz_analises = self._raizes_artefatos()
-        self._exibir_imagem_resultado(
-            self.analise_original, dados.get("imagem_original", ""), raiz_dataset
+
+        self.analise_itens.blockSignals(True)
+        self.analise_itens.clear()
+        for item in resultado.itens:
+            texto = f"{item.data or 'sem data'} • {len(item.deteccoes)} detecção(ões) • {item.patch_id[-28:]}"
+            self.analise_itens.addItem(texto)
+        self.analise_itens.blockSignals(False)
+        if resultado.itens:
+            self.analise_itens.setCurrentRow(0)
+            self._exibir_item_resultado(0)
+        else:
+            # Resultados antigos sem lista por recorte: mostra as imagens principais.
+            self._exibir_imagem_resultado(
+                self.analise_original, dados.get("imagem_original", ""), raiz_dataset
+            )
+            self._exibir_imagem_resultado(
+                self.analise_anotada, dados.get("imagem_analisada", ""), raiz_analises
+            )
+            self.analise_deteccoes.setRowCount(0)
+            self.analise_item_info.setText("")
+            self.analise_vegetacao.setText("")
+
+        aprovado = modelo_classificacao_aprovado()
+        self.analise_cultura_estado.setText(
+            "Cultura não determinada" if aprovado is None else "Classificação disponível"
         )
-        self._exibir_imagem_resultado(
-            self.analise_anotada, dados.get("imagem_analisada", ""), raiz_analises
-        )
-        relatorio = self._resolver_em_raiz_opcional(
-            dados.get("caminho_relatorio", ""), raiz_analises, {".pdf"}
-        )
+        relatorio = resultado.caminho_relatorio
         self.btn_relatorio.setEnabled(bool(relatorio and relatorio.is_file()))
         self.btn_salvar_relatorio.setEnabled(bool(relatorio and relatorio.is_file()))
+        self.btn_exportar_csv.setEnabled(True)
+        self.btn_exportar_json.setEnabled(True)
+        self.analise_abas.setCurrentIndex(0)
         self._navegar(self._indice_pagina("Análise da região"))
         self._recarregar_historico()
+
+    def _exibir_item_resultado(self, linha: int) -> None:
+        resultado = getattr(self, "_resultado_visual", None)
+        if resultado is None or not 0 <= linha < len(resultado.itens):
+            return
+        item: ItemResultado = resultado.itens[linha]
+        self._mostrar_pixmap_arquivo(self.analise_original, item.imagem_original)
+        self._mostrar_pixmap_arquivo(self.analise_anotada, item.imagem_analisada)
+        nuvens = "—" if item.nuvens_pct is None else f"{item.nuvens_pct:.1f}%"
+        self.analise_item_info.setText(
+            f"<b>Recorte</b> {item.patch_id}<br>Cena {item.cena or '—'} • aquisição "
+            f"{item.data or '—'} • nuvens no recorte {nuvens} • "
+            f"{len(item.deteccoes)} detecção(ões)"
+        )
+        self.analise_deteccoes.setRowCount(len(item.deteccoes))
+        for indice, deteccao in enumerate(item.deteccoes):
+            caixa = ", ".join(f"{valor:.0f}" for valor in deteccao.caixa_px)
+            for coluna, valor in enumerate(
+                (deteccao.classe, self._percentual_confianca(deteccao.confianca), caixa)
+            ):
+                self.analise_deteccoes.setItem(indice, coluna, QtWidgets.QTableWidgetItem(valor))
+        try:
+            indicadores = indicadores_vegetacao(item)
+        except Exception as erro:  # leitura raster nunca deve derrubar a tela
+            indicadores = []
+            self.analise_vegetacao.setText(f"Indicadores de vegetação indisponíveis: {erro}")
+            return
+        if indicadores:
+            partes = [
+                f"{ind.indice} médio {ind.media:.2f} (mín. {ind.minimo:.2f}, máx. "
+                f"{ind.maximo:.2f}; {ind.pixels_validos_pct:.0f}% de pixels válidos)"
+                for ind in indicadores
+            ]
+            self.analise_vegetacao.setText(
+                "Vegetação no recorte inteiro (não por talhão): " + "; ".join(partes) + "."
+            )
+        else:
+            self.analise_vegetacao.setText(
+                "Indicadores de vegetação indisponíveis para este recorte (NDVI/EVI não "
+                "baixados ou escala da coleção não documentada)."
+            )
+
+    @staticmethod
+    def _mostrar_pixmap_arquivo(rotulo: QtWidgets.QLabel, caminho: Path | None) -> None:
+        imagem = QtGui.QPixmap(str(caminho)) if caminho else QtGui.QPixmap()
+        if imagem.isNull():
+            rotulo.setPixmap(QtGui.QPixmap())
+            rotulo.setText("Imagem indisponível")
+            return
+        largura = max(160, min(rotulo.width(), 520))
+        altura = ALTURA_IMAGEM_RESULTADO
+        rotulo.setPixmap(
+            imagem.scaled(
+                largura, altura, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                QtCore.Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
+    def _exportar_resultado(self, formato: str) -> None:
+        resultado = getattr(self, "_resultado_visual", None)
+        if resultado is None:
+            return
+        sugestao = Path.home() / f"{resultado.analysis_id}.{formato}"
+        filtro = "CSV (*.csv)" if formato == "csv" else "JSON (*.json)"
+        destino, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Exportar resultado", str(sugestao), filtro
+        )
+        if not destino:
+            return
+        destino_path = Path(destino)
+        if destino_path.suffix.lower() != f".{formato}":
+            destino_path = destino_path.with_suffix(f".{formato}")
+        try:
+            if formato == "csv":
+                linhas = exportar_csv(resultado, destino_path)
+                mensagem = f"{linhas} detecção(ões) exportada(s) para {destino_path.name}."
+            else:
+                exportar_json(resultado, destino_path)
+                mensagem = f"Resultado exportado para {destino_path.name}."
+        except OSError as erro:
+            QtWidgets.QMessageBox.warning(self, "Não foi possível exportar", str(erro))
+            return
+        self.statusBar().showMessage(mensagem, 6000)
 
     @staticmethod
     def _percentual_confianca(valor: object) -> str:
@@ -2532,18 +2768,26 @@ class MainWindow(QtWidgets.QMainWindow):
             self.statusBar().showMessage(f"Não foi possível salvar o relatório: {erro}", 6000)
 
     def _recarregar_historico(self) -> None:
-        self.historico_tabela.setRowCount(0)
+        self._registros_historico = []
         try:
             config_path = Path(self.output_path.text().strip() or DEFAULT_CONFIG)
-            if not config_path.is_file():
-                return
-            config = ConfiguracaoProjeto.carregar(config_path, raiz=ROOT)
-            banco = config.caminho(config.analise.historico)
-            if not banco.is_file():
-                return
-            registros = RepositorioHistoricoAnalises(banco, ROOT).listar(limite=200)
+            if config_path.is_file():
+                config = ConfiguracaoProjeto.carregar(config_path, raiz=ROOT)
+                banco = config.caminho(config.analise.historico)
+                if banco.is_file():
+                    self._registros_historico = RepositorioHistoricoAnalises(banco, ROOT).listar(
+                        limite=500
+                    )
         except (OSError, TypeError, ValueError):
-            return
+            self._registros_historico = []
+        self._aplicar_filtro_historico()
+
+    def _aplicar_filtro_historico(self) -> None:
+        registros = filtrar_historico(
+            getattr(self, "_registros_historico", []),
+            self.historico_filtro.text() if hasattr(self, "historico_filtro") else "",
+            int(self.historico_periodo.currentData() or 0) if hasattr(self, "historico_periodo") else None,
+        )
         self.historico_tabela.setRowCount(len(registros))
         for linha, registro in enumerate(registros):
             resumo = registro.resumo if isinstance(registro.resumo, dict) else {}
@@ -2556,9 +2800,24 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             for coluna, valor in enumerate(valores):
                 item = QtWidgets.QTableWidgetItem(valor)
+                if coluna == 0:
+                    item.setData(QtCore.Qt.ItemDataRole.UserRole + 1, registro.analysis_id)
                 if coluna == 4:
                     item.setData(QtCore.Qt.ItemDataRole.UserRole, registro.report_path)
                 self.historico_tabela.setItem(linha, coluna, item)
+
+    def _abrir_resultado_historico(self) -> None:
+        linha = self.historico_tabela.currentRow()
+        item = self.historico_tabela.item(linha, 0) if linha >= 0 else None
+        analysis_id = item.data(QtCore.Qt.ItemDataRole.UserRole + 1) if item else None
+        if not analysis_id:
+            self.statusBar().showMessage("Selecione uma análise no histórico.", 4000)
+            return
+        try:
+            _, raiz_analises = self._raizes_artefatos()
+            self._carregar_resultado_analise(raiz_analises / str(analysis_id) / "resultado.json")
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as erro:
+            QtWidgets.QMessageBox.warning(self, "Não foi possível abrir o resultado", str(erro))
 
     def _abrir_relatorio_historico(self, indice: QtCore.QModelIndex) -> None:
         item = self.historico_tabela.item(indice.row(), 4)

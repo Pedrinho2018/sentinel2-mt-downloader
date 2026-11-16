@@ -381,6 +381,71 @@ class TestGuiQt(TestCase):
         self.janela.fim.setDate(QtCore.QDate(2026, 3, 1))
         self.assertEqual(self.janela.assist_fim.date(), QtCore.QDate(2026, 3, 1))
 
+    def _preparar_resultado_real(self) -> Path:
+        from tests.test_resultados_analise import criar_artefatos
+
+        resultado = criar_artefatos(self.pasta)
+        dados = json.loads(resultado.read_text(encoding="utf-8"))
+        for item in dados["resultados"]:
+            item["entrada"] = str(self.pasta / item["entrada"])
+        resultado.write_text(json.dumps(dados), encoding="utf-8")
+        self.janela._salvar_configuracao(avisar=False)
+        config = yaml.safe_load(Path(self.janela.output_path.text()).read_text(encoding="utf-8"))
+        config["dataset"]["pasta"] = str(self.pasta / "data/dataset")
+        config["analise"]["pasta"] = str(self.pasta / "data/analises")
+        config["analise"]["historico"] = str(self.pasta / "data/historico.sqlite3")
+        Path(self.janela.output_path.text()).write_text(yaml.safe_dump(config), encoding="utf-8")
+        return resultado
+
+    def test_resultado_separa_talhoes_de_culturas_e_lista_deteccoes(self) -> None:
+        self.janela._carregar_resultado_analise(self._preparar_resultado_real())
+
+        abas = [self.janela.analise_abas.tabText(i) for i in range(self.janela.analise_abas.count())]
+        self.assertEqual(abas, ["Talhões (detecção)", "Culturas (classificação)"])
+        self.assertEqual(self.janela.analise_itens.count(), 2)
+        self.assertEqual(self.janela.analise_deteccoes.rowCount(), 2)
+        self.assertEqual(self.janela.analise_deteccoes.item(0, 1).text(), "90.0%")
+        self.assertIn("2026-03-22", self.janela.analise_item_info.text())
+        self.assertIn("NDVI médio 0.70", self.janela.analise_vegetacao.text())
+        self.assertIn("não por talhão", self.janela.analise_vegetacao.text())
+        self.assertIn("2.1.0-beta.1", self.janela.analise_info.text())
+        self.assertIn("detecção de talhões", self.janela.analise_info.text())
+        self.assertEqual(self.janela.analise_cultura_estado.text(), "Cultura não determinada")
+        self.assertFalse(self.janela.analise_original.pixmap().isNull())
+        self.assertFalse(self.janela.analise_anotada.pixmap().isNull())
+        textos = " ".join(
+            label.text() for label in self.janela.stack.currentWidget().findChildren(QtWidgets.QLabel)
+        ).casefold()
+        self.assertNotIn("hectares de", textos)
+
+    def test_exporta_csv_do_resultado(self) -> None:
+        self.janela._carregar_resultado_analise(self._preparar_resultado_real())
+        destino = self.pasta / "exportado"
+        with patch.object(
+            gui.QtWidgets.QFileDialog, "getSaveFileName", return_value=(str(destino), "CSV (*.csv)")
+        ):
+            self.janela._exportar_resultado("csv")
+
+        conteudo = (self.pasta / "exportado.csv").read_text(encoding="utf-8")
+        self.assertIn("x1_px", conteudo)
+        self.assertEqual(len(conteudo.strip().splitlines()), 3)
+
+    def test_historico_filtra_e_abre_resultado(self) -> None:
+        resultado = self._preparar_resultado_real()
+        repositorio = gui.RepositorioHistoricoAnalises(self.pasta / "data/historico.sqlite3", self.pasta)
+        repositorio.salvar({"analysis_id": "analise-1", "status": "concluida", "regiao": "Sorriso"})
+        repositorio.salvar({"analysis_id": "analise-2", "status": "concluida", "regiao": "Cuiabá"})
+        self.janela._recarregar_historico()
+        self.assertEqual(self.janela.historico_tabela.rowCount(), 2)
+
+        self.janela.historico_filtro.setText("sorriso")
+        self.assertEqual(self.janela.historico_tabela.rowCount(), 1)
+        self.janela.historico_tabela.setCurrentCell(0, 0)
+        self.janela._abrir_resultado_historico()
+
+        self.assertEqual(self.janela.titulo_pagina.text(), "Análise da região")
+        self.assertEqual(self.janela._resultado_visual.caminho_json, resultado.resolve())
+
     def test_salva_yaml_com_os_dados_do_formulario(self) -> None:
         self.janela.nome_regiao.setText("Norte de MT")
         destino = self.janela._salvar_configuracao(avisar=False)

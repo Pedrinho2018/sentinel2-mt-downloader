@@ -97,7 +97,7 @@ E5; isso não foi testado nesta entrega.
   nuvem e preview → seleção → download com progresso por arquivo, velocidade,
   cancelamento e retomada quando o servidor aceitar `Range`. Bandas e YAML
   ficam em "Opções avançadas".
-- **Resultados** (E4): imagem original e overlay, classes e confiança, modelo e
+- **Resultados** (E4, pronto): imagem original e overlay, classes e confiança, modelo e
   versão, data da cena, NDVI/EVI quando baixados, exportação. Detecção de
   talhões e classificação de culturas em abas separadas; culturas só aparecem
   com modelo aprovado, caso contrário "cultura não determinada". Sem hectares.
@@ -151,7 +151,7 @@ Princípios:
 | E1 | **Painel inicial** (feito) | P0 | página "Início" é a primeira; mostra regiões, cenas catalogadas/baixadas, recortes, última análise, modelos com integridade SHA-256, espaço em disco, tarefa atual; avisa `.part` órfão e catálogo ausente; cálculo fora da thread da GUI; não altera arquivos (teste); suíte completa verde |
 | E2 | Região simplificada (feito) | P0 | busca de município offline por lista IBGE embutida; desenho de retângulo; importação GeoJSON (Shapefile opcional com dependência opcional); bbox derivada preserva CRS EPSG:4326; favoritos reutilizam `LocalConfigStore`; testes sem rede |
 | E3 | Assistente de download (feito) | P0 | passos 1–7 navegáveis; tabela de cenas a partir de catalogação existente; progresso estruturado `[PROGRESSO] {json}` da CLI (bytes, total, velocidade); cancelar remove `.part`; retomada `Range` testada com servidor fake; limpeza de `.part` órfãos com confirmação |
-| E4 | Resultados agrícolas | P0 | abas "Talhões (detecção)" e "Culturas (classificação)"; culturas exibem "não determinada" sem modelo aprovado; histórico filtrável; exportação CSV/JSON; nenhum texto menciona hectares |
+| E4 | Resultados agrícolas (feito) | P0 | abas "Talhões (detecção)" e "Culturas (classificação)"; culturas exibem "não determinada" sem modelo aprovado; histórico filtrável; exportação CSV/JSON; nenhum texto menciona hectares |
 | E5 | Datasets do Laboratório | P1 | criar projeto com tipo e esquema de classes versionado; importar patches do catálogo sem copiar GeoTIFF; SHA-256 e detecção de duplicatas; verificação de integridade; filtros por região, data, nuvem e estado de rotulagem |
 | E6 | Rotulagem | P1 | exportar lote para anotador externo; detectar LabelImg/X-AnyLabeling instalados; importar `.txt`; validador YOLO com mensagens por linha; contagem rotulados/pendentes; tela de atribuição de classe para classificação |
 | E7 | Preparação do treino | P2 | split por grupo espacial sem vazamento (teste: nenhum grupo em dois splits); relatório de desbalanceamento; revisão antes de iniciar; `data.yaml` gerado em pasta versionada |
@@ -228,3 +228,26 @@ crescente (`politica_retentativa_stac`) e a paginação para assim que todas as
 cenas escolhidas foram processadas.
 
 A TUI ainda não tem o assistente; ela continua usando as operações anteriores.
+
+## 8. Entrega E4 — o que mudou
+
+- `analise/resultados.py`: leitura de `resultado.json` com resolução de caminhos
+  restrita às raízes de dataset e análises; itens por recorte com data, cena,
+  nuvens, overlay e detecções; indicadores NDVI/EVI com escala documentada por
+  coleção; exportação CSV/JSON atômica; filtro do histórico; ponto único
+  `modelo_classificacao_aprovado()` (retorna `None` até a E9).
+- GUI: abas **Talhões (detecção)** e **Culturas (classificação)**, navegação por
+  recorte, tabela de detecções, exportações e histórico filtrável com
+  **Abrir resultado**.
+
+Escala dos índices conferida no STAC do INPE em 16/11/2026 (`eo:bands` de
+`S2-16D-2`: NDVI/EVI `int16`, escala 0,0001, nodata -9999). Observação da
+auditoria: os `multiband.tif` não gravam escala nem nodata por banda (usam
+máscara por dataset); por isso a escala vem de uma tabela explícita e coleções
+fora dela não exibem índices. Gravar `scales`/`offsets` no patch fica como
+melhoria para revisão do agente `geospatial`, pois altera o contrato do dataset.
+
+Não verificado: a tela não foi exercitada com uma análise real do `best.pt`
+(os testes usam um `resultado.json` e um patch sintéticos), porque o catálogo
+de patches local está ausente e gerar o dataset e analisar exige uma execução
+longa.
