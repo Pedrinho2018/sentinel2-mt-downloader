@@ -120,6 +120,12 @@ class ConfiguracaoAnalise:
 
 
 @dataclass(frozen=True)
+class ConfiguracaoLaboratorio:
+    # Banco do Laboratório de IA, miniaturas e cópias de imagens externas.
+    pasta: str = "data/laboratorio"
+
+
+@dataclass(frozen=True)
 class ConfiguracaoProjeto:
     raiz: Path
     stac: ConfiguracaoStac
@@ -132,6 +138,7 @@ class ConfiguracaoProjeto:
     sincronizacao: ConfiguracaoSincronizacao
     dataset: ConfiguracaoDataset = field(default_factory=ConfiguracaoDataset)
     analise: ConfiguracaoAnalise = field(default_factory=ConfiguracaoAnalise)
+    laboratorio: ConfiguracaoLaboratorio = field(default_factory=ConfiguracaoLaboratorio)
 
     @classmethod
     def carregar(cls, caminho: Path, raiz: Path | None = None) -> "ConfiguracaoProjeto":
@@ -195,6 +202,7 @@ class ConfiguracaoProjeto:
                 **dataset_dados,
             ),
             analise=ConfiguracaoAnalise(**analise),
+            laboratorio=ConfiguracaoLaboratorio(**dict(dados.get("laboratorio") or {})),
         )
         config.validar()
         return config

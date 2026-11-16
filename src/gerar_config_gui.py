@@ -44,6 +44,23 @@ from sentinel2_mt.assistente_download import (
     media_tamanho_cena_local,
 )
 from sentinel2_mt.http import listar_parciais_legados, remover_parciais_legados
+from sentinel2_mt.laboratorio.datasets import (
+    caminho_miniatura,
+    descobrir_recortes,
+    filtrar_imagens,
+    gerar_miniatura,
+    importar_externas,
+    preparar_recortes,
+    resolver_pasta_laboratorio,
+    resumo_safras,
+    verificar_lote,
+)
+from sentinel2_mt.laboratorio.projetos import (
+    ROTULOS_TIPO,
+    TIPOS_PROJETO,
+    ImagemDataset,
+    RepositorioLaboratorio,
+)
 from sentinel2_mt.area import (
     AreaImportada,
     Municipio,
@@ -561,6 +578,13 @@ class MapaWidget(QWebEngineView):
 ALTURA_IMAGEM_RESULTADO = 230
 
 
+class _PonteTarefa(QtCore.QObject):
+    """Progresso e conclusão de tarefas do Laboratório executadas em segundo plano."""
+
+    progresso = QtCore.Signal(int, int)
+    concluido = QtCore.Signal(object)
+
+
 class _PontePainel(QtCore.QObject):
     """Entrega o resumo calculado em segundo plano à thread da interface."""
 
@@ -592,6 +616,7 @@ class MainWindow(QtWidgets.QMainWindow):
         ("Google Drive", "Configure OAuth e sincronização"),
         ("Análise da região", "Resultados agrícolas: talhões detectados e culturas"),
         ("Histórico", "Acesse análises e relatórios locais"),
+        ("Laboratório de IA", "Datasets, classes e preparação para treinar modelos"),
         ("Configuração", "Revise YAML e perfis locais"),
         ("Sobre", "Conheça o aplicativo e seu fluxo de trabalho"),
         ("Preciso de ajuda", "Encontre orientações para resolver problemas"),
@@ -620,6 +645,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._assist_cancelado = False
         self._assist_rede = QtNetwork.QNetworkAccessManager(self)
         self._assist_resposta_miniatura: QtNetwork.QNetworkReply | None = None
+        self._lab_pool = QtCore.QThreadPool(self)
+        self._lab_pool.setMaxThreadCount(1)
+        self._lab_ocupado = False
+        self._lab_ponte = _PonteTarefa(self)
+        self._lab_ponte.progresso.connect(self._lab_progresso)
+        self._lab_ponte.concluido.connect(self._lab_tarefa_concluida)
+        self._lab_ao_concluir = None
         self._pool_painel = QtCore.QThreadPool(self)
         self._pool_painel.setMaxThreadCount(1)
         self._painel_em_coleta = False
@@ -821,6 +853,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stack.addWidget(self._pagina_drive())
         self.stack.addWidget(self._pagina_analise())
         self.stack.addWidget(self._pagina_historico())
+        self.stack.addWidget(self._pagina_laboratorio())
         self.stack.addWidget(self._pagina_config())
         self.stack.addWidget(self._pagina_sobre())
         self.stack.addWidget(self._pagina_ajuda())
@@ -2191,6 +2224,453 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(cartao)
         return pagina
 
+    # ------------------------------------------------------------ Laboratório de IA
+
+    def _pagina_laboratorio(self) -> QtWidgets.QWidget:
+        pagina = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(pagina)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        projeto = Cartao(
+            "Projeto",
+            "Cada projeto tem um tipo fixo e um esquema de classes versionado. Detecção usa "
+            "caixas (talhões); classificação usa uma classe por imagem (culturas).",
+        )
+        linha = QtWidgets.QHBoxLayout()
+        self.lab_projeto = QtWidgets.QComboBox()
+        self.lab_projeto.setMinimumWidth(260)
+        self.lab_projeto.currentIndexChanged.connect(self._lab_projeto_alterado)
+        novo = botao("Novo projeto…", "primaryButton")
+        novo.clicked.connect(self._lab_dialogo_novo_projeto)
+        self.lab_btn_classes = botao("Editar classes…")
+        self.lab_btn_classes.clicked.connect(self._lab_dialogo_classes)
+        linha.addWidget(self.lab_projeto, 1)
+        linha.addWidget(novo)
+        linha.addWidget(self.lab_btn_classes)
+        projeto.layout_principal.addLayout(linha)
+        self.lab_info_projeto = QtWidgets.QLabel("Crie um projeto para começar.")
+        self.lab_info_projeto.setWordWrap(True)
+        projeto.layout_principal.addWidget(self.lab_info_projeto)
+        acoes = QtWidgets.QHBoxLayout()
+        self.lab_btn_importar = botao("Importar recortes do sistema")
+        self.lab_btn_importar.setToolTip(
+            "Adiciona os recortes RGB já gerados, sem copiar nem alterar os GeoTIFFs"
+        )
+        self.lab_btn_importar.clicked.connect(self._lab_importar_sistema)
+        self.lab_btn_externas = botao("Importar imagens externas…")
+        self.lab_btn_externas.clicked.connect(self._lab_importar_externas_dialogo)
+        self.lab_btn_integridade = botao("Verificar integridade")
+        self.lab_btn_integridade.clicked.connect(self._lab_verificar_integridade)
+        for item in (self.lab_btn_importar, self.lab_btn_externas, self.lab_btn_integridade):
+            acoes.addWidget(item)
+        acoes.addStretch()
+        self.lab_progresso = QtWidgets.QProgressBar()
+        self.lab_progresso.setTextVisible(False)
+        self.lab_progresso.setFixedWidth(180)
+        self.lab_progresso.setRange(0, 1)
+        acoes.addWidget(self.lab_progresso)
+        projeto.layout_principal.addLayout(acoes)
+        self.lab_status = QtWidgets.QLabel("")
+        self.lab_status.setObjectName("cardHelp")
+        self.lab_status.setWordWrap(True)
+        projeto.layout_principal.addWidget(self.lab_status)
+        layout.addWidget(projeto)
+
+        imagens = Cartao("Imagens do dataset")
+        self.lab_contagens = QtWidgets.QLabel("")
+        imagens.layout_principal.addWidget(self.lab_contagens)
+        filtros = QtWidgets.QHBoxLayout()
+        self.lab_filtro_texto = QtWidgets.QLineEdit()
+        self.lab_filtro_texto.setPlaceholderText("Região, cena, grade ou data")
+        self.lab_filtro_texto.setClearButtonEnabled(True)
+        self.lab_filtro_safra = QtWidgets.QComboBox()
+        self.lab_filtro_nuvem = QtWidgets.QSpinBox()
+        self.lab_filtro_nuvem.setRange(0, 100)
+        self.lab_filtro_nuvem.setValue(100)
+        self.lab_filtro_nuvem.setSuffix(" % nuvens")
+        self.lab_filtro_rotulo = QtWidgets.QComboBox()
+        for texto, valor in (
+            ("Todas", ""), ("Pendentes", "pendente"), ("Rotuladas", "rotulada"), ("Revisar", "revisar")
+        ):
+            self.lab_filtro_rotulo.addItem(texto, valor)
+        self.lab_filtro_duplicatas = QtWidgets.QCheckBox("Só duplicatas")
+        self.lab_filtro_problemas = QtWidgets.QCheckBox("Só com problema")
+        for widget in (
+            self.lab_filtro_texto, self.lab_filtro_safra, self.lab_filtro_nuvem,
+            self.lab_filtro_rotulo, self.lab_filtro_duplicatas, self.lab_filtro_problemas,
+        ):
+            filtros.addWidget(widget, 2 if widget is self.lab_filtro_texto else 0)
+        self.lab_filtro_texto.textChanged.connect(self._lab_renderizar)
+        self.lab_filtro_safra.currentIndexChanged.connect(self._lab_renderizar)
+        self.lab_filtro_nuvem.valueChanged.connect(self._lab_renderizar)
+        self.lab_filtro_rotulo.currentIndexChanged.connect(self._lab_renderizar)
+        self.lab_filtro_duplicatas.toggled.connect(self._lab_renderizar)
+        self.lab_filtro_problemas.toggled.connect(self._lab_renderizar)
+        imagens.layout_principal.addLayout(filtros)
+
+        divisor = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        self.lab_grade = QtWidgets.QListWidget()
+        self.lab_grade.setViewMode(QtWidgets.QListView.ViewMode.IconMode)
+        self.lab_grade.setIconSize(QtCore.QSize(112, 112))
+        self.lab_grade.setGridSize(QtCore.QSize(132, 150))
+        self.lab_grade.setResizeMode(QtWidgets.QListView.ResizeMode.Adjust)
+        self.lab_grade.setMovement(QtWidgets.QListView.Movement.Static)
+        self.lab_grade.setUniformItemSizes(True)
+        self.lab_grade.setWordWrap(True)
+        self.lab_grade.currentRowChanged.connect(self._lab_mostrar_detalhe)
+        divisor.addWidget(self.lab_grade)
+        self.lab_detalhe = QtWidgets.QLabel("Selecione uma imagem.")
+        self.lab_detalhe.setWordWrap(True)
+        self.lab_detalhe.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+        self.lab_detalhe.setMinimumWidth(260)
+        self.lab_detalhe.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        divisor.addWidget(self.lab_detalhe)
+        divisor.setSizes([820, 300])
+        imagens.layout_principal.addWidget(divisor, 1)
+        layout.addWidget(imagens, 1)
+        self._lab_imagens: list[ImagemDataset] = []
+        self._lab_visiveis: list[ImagemDataset] = []
+        return pagina
+
+    def _lab_contexto(
+        self, criar: bool = True
+    ) -> tuple[ConfiguracaoProjeto, Path, RepositorioLaboratorio] | None:
+        """Abre o laboratório. Com `criar=False`, não grava configuração nem cria o banco."""
+        try:
+            config = self._config_painel()
+            if config is None and criar:
+                caminho = self._salvar_configuracao(avisar=False)
+                config = ConfiguracaoProjeto.carregar(Path(caminho), raiz=ROOT) if caminho else None
+            if config is None:
+                return None
+            pasta = resolver_pasta_laboratorio(config)
+            banco = pasta / "laboratorio.sqlite3"
+            if not criar and not banco.is_file():
+                # Só visualizar a página não deve criar pastas ou bancos vazios.
+                return None
+            return config, pasta, RepositorioLaboratorio(banco)
+        except (OSError, TypeError, ValueError, KeyError, yaml.YAMLError) as erro:
+            self.lab_status.setText(f"Laboratório indisponível: {erro}")
+            return None
+
+    def _lab_projeto_id(self) -> int | None:
+        valor = self.lab_projeto.currentData()
+        return int(valor) if valor is not None else None
+
+    def _lab_recarregar_projetos(self, selecionar: int | None = None) -> None:
+        contexto = self._lab_contexto(criar=False)
+        atual = selecionar if selecionar is not None else self._lab_projeto_id()
+        self.lab_projeto.blockSignals(True)
+        self.lab_projeto.clear()
+        if contexto is not None:
+            for projeto in contexto[2].listar_projetos():
+                self.lab_projeto.addItem(f"{projeto.nome} — {ROTULOS_TIPO[projeto.tipo]}", projeto.id)
+        if atual is not None:
+            indice = self.lab_projeto.findData(atual)
+            if indice >= 0:
+                self.lab_projeto.setCurrentIndex(indice)
+        self.lab_projeto.blockSignals(False)
+        self._lab_projeto_alterado()
+
+    def _lab_projeto_alterado(self) -> None:
+        projeto_id = self._lab_projeto_id()
+        tem_projeto = projeto_id is not None
+        for item in (self.lab_btn_classes, self.lab_btn_importar, self.lab_btn_externas, self.lab_btn_integridade):
+            item.setEnabled(tem_projeto and not self._lab_ocupado)
+        contexto = self._lab_contexto() if tem_projeto else None
+        if contexto is None or projeto_id is None:
+            self._lab_imagens = []
+            self.lab_info_projeto.setText("Crie um projeto para começar.")
+            self._lab_renderizar()
+            return
+        repo = contexto[2]
+        self._lab_pasta_cache = contexto[1]
+        projeto = repo.obter_projeto(projeto_id)
+        esquema = repo.esquema_atual(projeto_id)
+        formato = (
+            "anotações YOLO com caixas (.txt por imagem)"
+            if projeto.tipo == "deteccao"
+            else "uma classe por imagem, sem caixas"
+        )
+        self.lab_info_projeto.setText(
+            f"<b>{projeto.nome}</b> • {ROTULOS_TIPO[projeto.tipo]} • rótulos: {formato}<br>"
+            f"Esquema de classes v{esquema.versao}: {', '.join(esquema.classes)}"
+        )
+        self._lab_imagens = repo.listar_imagens(projeto_id)
+        safra_atual = self.lab_filtro_safra.currentData()
+        self.lab_filtro_safra.blockSignals(True)
+        self.lab_filtro_safra.clear()
+        self.lab_filtro_safra.addItem("Todas as safras", "")
+        for safra in resumo_safras(self._lab_imagens):
+            self.lab_filtro_safra.addItem(f"Safra {safra}", safra)
+        indice = self.lab_filtro_safra.findData(safra_atual)
+        self.lab_filtro_safra.setCurrentIndex(max(0, indice))
+        self.lab_filtro_safra.blockSignals(False)
+        contagens = repo.contagens(projeto_id)
+        self.lab_contagens.setText(
+            f"<b>{contagens['total']}</b> imagem(ns) • {contagens['pendentes']} pendente(s) • "
+            f"{contagens['rotuladas']} rotulada(s) • {contagens['revisar']} a revisar • "
+            f"{contagens['duplicatas']} duplicata(s) • {contagens['problemas']} com problema • "
+            f"{contagens['nao_verificadas']} não verificada(s)"
+        )
+        self._lab_renderizar()
+
+    def _lab_renderizar(self) -> None:
+        if not hasattr(self, "lab_grade"):
+            return
+        nuvem = self.lab_filtro_nuvem.value()
+        self._lab_visiveis = filtrar_imagens(
+            self._lab_imagens,
+            texto=self.lab_filtro_texto.text(),
+            safra=str(self.lab_filtro_safra.currentData() or ""),
+            nuvem_max_pct=None if nuvem >= 100 else float(nuvem),
+            estado_rotulo=str(self.lab_filtro_rotulo.currentData() or ""),
+            somente_duplicatas=self.lab_filtro_duplicatas.isChecked(),
+            somente_problemas=self.lab_filtro_problemas.isChecked(),
+        )
+        contexto_pasta = getattr(self, "_lab_pasta_cache", None)
+        self.lab_grade.clear()
+        for imagem in self._lab_visiveis[:3000]:
+            item = QtWidgets.QListWidgetItem(f"{imagem.data or 'externa'}\n{imagem.tile or imagem.patch_id[-10:]}")
+            if contexto_pasta is not None:
+                miniatura = caminho_miniatura(contexto_pasta, imagem)
+                if miniatura.is_file():
+                    item.setIcon(QtGui.QIcon(str(miniatura)))
+            marcas = []
+            if imagem.duplicata_de:
+                marcas.append("duplicata de " + imagem.duplicata_de)
+            if imagem.integridade in {"ausente", "alterada", "ilegivel"}:
+                marcas.append("integridade: " + imagem.integridade)
+                item.setForeground(QtGui.QBrush(QtGui.QColor(CORES["perigo_texto"])))
+            item.setToolTip(imagem.patch_id + ("\n" + "\n".join(marcas) if marcas else ""))
+            self.lab_grade.addItem(item)
+
+    def _lab_mostrar_detalhe(self, linha: int) -> None:
+        if not 0 <= linha < len(self._lab_visiveis):
+            self.lab_detalhe.setText("Selecione uma imagem.")
+            return
+        imagem = self._lab_visiveis[linha]
+        nuvem = "—" if imagem.nuvem_pct is None else f"{imagem.nuvem_pct:.1f}%"
+        linhas = [
+            f"<b>{imagem.patch_id}</b>",
+            f"Origem: {imagem.origem}",
+            f"Cena: {imagem.cena or '—'} • grade {imagem.tile or '—'}",
+            f"Data: {imagem.data or '—'} • safra {imagem.safra or '—'}",
+            f"Região: {imagem.regiao or '—'} • nuvens {nuvem}",
+            f"Tamanho: {imagem.largura}×{imagem.altura} px",
+            f"Rotulagem: {imagem.estado_rotulo}",
+            f"Integridade: {imagem.integridade.replace('_', ' ')}",
+            f"SHA-256: {imagem.sha256[:16]}…",
+            f"RGB: {imagem.caminho_rgb}",
+        ]
+        if imagem.caminho_geotiff:
+            linhas.append(f"GeoTIFF científico: {imagem.caminho_geotiff}")
+        if imagem.duplicata_de:
+            linhas.append(f"<span style='color:{CORES['perigo_texto']}'>Duplicata de {imagem.duplicata_de}</span>")
+        self.lab_detalhe.setText("<br>".join(linhas))
+
+    # -------------------------------------------------------- Laboratório: projetos
+
+    def _lab_criar_projeto(self, nome: str, tipo: str, classes: list[str]) -> bool:
+        contexto = self._lab_contexto()
+        if contexto is None:
+            return False
+        try:
+            projeto = contexto[2].criar_projeto(nome, tipo, classes)
+        except ValueError as erro:
+            QtWidgets.QMessageBox.warning(self, "Não foi possível criar o projeto", str(erro))
+            return False
+        self._lab_recarregar_projetos(selecionar=projeto.id)
+        self.lab_status.setText(f"Projeto '{projeto.nome}' criado.")
+        return True
+
+    def _lab_dialogo_novo_projeto(self) -> None:
+        dialogo = QtWidgets.QDialog(self)
+        dialogo.setWindowTitle("Novo projeto")
+        form = QtWidgets.QFormLayout(dialogo)
+        nome = QtWidgets.QLineEdit()
+        tipo = QtWidgets.QComboBox()
+        for chave, rotulo in ROTULOS_TIPO.items():
+            tipo.addItem(rotulo, chave)
+        classes = QtWidgets.QPlainTextEdit()
+        classes.setPlaceholderText("Uma classe por linha")
+        tipo.currentIndexChanged.connect(
+            lambda: classes.setPlainText("\n".join(TIPOS_PROJETO[tipo.currentData()]))
+        )
+        classes.setPlainText("\n".join(TIPOS_PROJETO[tipo.currentData()]))
+        aviso = QtWidgets.QLabel("O tipo não pode ser alterado depois; as classes podem ganhar novas versões.")
+        aviso.setObjectName("cardHelp")
+        aviso.setWordWrap(True)
+        form.addRow("Nome", nome)
+        form.addRow("Tipo", tipo)
+        form.addRow("Classes", classes)
+        form.addRow(aviso)
+        botoes = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        botoes.accepted.connect(dialogo.accept)
+        botoes.rejected.connect(dialogo.reject)
+        form.addRow(botoes)
+        if dialogo.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            self._lab_criar_projeto(
+                nome.text(), str(tipo.currentData()),
+                [linha for linha in classes.toPlainText().splitlines() if linha.strip()],
+            )
+
+    def _lab_salvar_classes(self, classes: list[str]) -> bool:
+        projeto_id = self._lab_projeto_id()
+        contexto = self._lab_contexto()
+        if projeto_id is None or contexto is None:
+            return False
+        try:
+            esquema = contexto[2].nova_versao_esquema(projeto_id, classes)
+        except ValueError as erro:
+            QtWidgets.QMessageBox.warning(self, "Classes inválidas", str(erro))
+            return False
+        self._lab_projeto_alterado()
+        self.lab_status.setText(f"Esquema de classes na versão {esquema.versao}.")
+        return True
+
+    def _lab_dialogo_classes(self) -> None:
+        projeto_id = self._lab_projeto_id()
+        contexto = self._lab_contexto()
+        if projeto_id is None or contexto is None:
+            return
+        atual = contexto[2].esquema_atual(projeto_id)
+        texto, ok = QtWidgets.QInputDialog.getMultiLineText(
+            self,
+            "Editar classes",
+            f"Classes (uma por linha). Salvar cria a versão {atual.versao + 1}; a versão "
+            f"{atual.versao} continua registrada.",
+            "\n".join(atual.classes),
+        )
+        if ok:
+            self._lab_salvar_classes([linha for linha in texto.splitlines() if linha.strip()])
+
+    # -------------------------------------------------------- Laboratório: tarefas
+
+    def _lab_executar(self, descricao: str, trabalho, ao_concluir) -> bool:
+        """Executa `trabalho(progresso)` fora da thread da interface."""
+        if self._lab_ocupado:
+            return False
+        self._lab_ocupado = True
+        self._lab_ao_concluir = ao_concluir
+        self.lab_status.setText(descricao)
+        self.lab_progresso.setRange(0, 0)
+        self._lab_projeto_alterado()
+        ponte = self._lab_ponte
+
+        def executar() -> None:
+            try:
+                resultado = trabalho(lambda feito, total: ponte.progresso.emit(feito, total))
+            except Exception as erro:  # a tarefa nunca derruba a GUI
+                resultado = erro
+            ponte.concluido.emit(resultado)
+
+        self._lab_pool.start(executar)
+        return True
+
+    def _lab_progresso(self, feito: int, total: int) -> None:
+        self.lab_progresso.setRange(0, max(total, 1))
+        self.lab_progresso.setValue(feito)
+
+    def _lab_tarefa_concluida(self, resultado: object) -> None:
+        self._lab_ocupado = False
+        self.lab_progresso.setRange(0, 1)
+        self.lab_progresso.setValue(0)
+        callback, self._lab_ao_concluir = self._lab_ao_concluir, None
+        if isinstance(resultado, Exception):
+            self.lab_status.setText(f"A tarefa falhou: {resultado}")
+        elif callback is not None:
+            callback(resultado)
+        self._lab_projeto_alterado()
+
+    def _lab_importar_sistema(self) -> None:
+        projeto_id = self._lab_projeto_id()
+        contexto = self._lab_contexto()
+        if projeto_id is None or contexto is None:
+            return
+        config, pasta, repo = contexto
+        regiao = self.nome_regiao.text().strip()
+
+        def trabalho(progresso):
+            recortes, origem = descobrir_recortes(config)
+            imagens = preparar_recortes(recortes, config.raiz, origem, regiao, progresso)
+            novas, existentes = repo.adicionar_imagens(projeto_id, imagens)
+            for imagem in imagens:
+                gerar_miniatura(imagem, config.raiz, pasta)
+            return origem, len(recortes), novas, existentes
+
+        def concluir(resultado) -> None:
+            origem, encontrados, novas, existentes = resultado
+            fonte = "no catálogo de patches" if origem == "catalogo" else "na pasta do dataset (catálogo ausente)"
+            self.lab_status.setText(
+                f"{encontrados} recorte(s) encontrados {fonte}: {novas} adicionado(s), "
+                f"{existentes} já estavam no projeto. Nenhum arquivo foi copiado ou alterado."
+            )
+
+        self._lab_pasta_cache = pasta
+        self._lab_executar("Importando recortes do sistema…", trabalho, concluir)
+
+    def _lab_importar_externas_dialogo(self) -> None:
+        arquivos, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            self, "Importar imagens externas", str(Path.home()), "Imagens (*.png *.jpg *.jpeg)"
+        )
+        if arquivos:
+            self._lab_importar_externas([Path(caminho) for caminho in arquivos])
+
+    def _lab_importar_externas(self, arquivos: list[Path]) -> None:
+        projeto_id = self._lab_projeto_id()
+        contexto = self._lab_contexto()
+        if projeto_id is None or contexto is None:
+            return
+        config, pasta, repo = contexto
+        regiao = self.nome_regiao.text().strip()
+
+        def trabalho(progresso):
+            imagens, erros = importar_externas(arquivos, pasta, config.raiz, regiao, progresso)
+            novas, existentes = repo.adicionar_imagens(projeto_id, imagens)
+            for imagem in imagens:
+                gerar_miniatura(imagem, config.raiz, pasta)
+            return novas, existentes, erros
+
+        def concluir(resultado) -> None:
+            novas, existentes, erros = resultado
+            texto = (
+                f"{novas} imagem(ns) externa(s) copiada(s) para o laboratório; {existentes} já existiam."
+                " Os arquivos originais não foram alterados."
+            )
+            if erros:
+                texto += f" {len(erros)} recusada(s): " + "; ".join(erros[:3])
+            self.lab_status.setText(texto)
+
+        self._lab_pasta_cache = pasta
+        self._lab_executar("Importando imagens externas…", trabalho, concluir)
+
+    def _lab_verificar_integridade(self) -> None:
+        projeto_id = self._lab_projeto_id()
+        contexto = self._lab_contexto()
+        if projeto_id is None or contexto is None:
+            return
+        config, pasta, repo = contexto
+        imagens = repo.listar_imagens(projeto_id)
+
+        def trabalho(progresso):
+            estados = verificar_lote(imagens, config.raiz, progresso)
+            repo.atualizar_integridade(projeto_id, estados)
+            return estados
+
+        def concluir(estados) -> None:
+            problemas = {chave: valor for chave, valor in estados.items() if valor != "ok"}
+            self.lab_status.setText(
+                f"{len(estados)} imagem(ns) verificada(s): {len(estados) - len(problemas)} íntegra(s), "
+                f"{len(problemas)} com problema (ausente, alterada ou ilegível)."
+            )
+
+        self._lab_pasta_cache = pasta
+        self._lab_executar("Verificando integridade (SHA-256 e leitura)…", trabalho, concluir)
+
     def _pagina_sobre(self) -> QtWidgets.QWidget:
         pagina = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(pagina)
@@ -2314,6 +2794,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._recarregar_historico()
         elif titulo == "Início":
             self._atualizar_painel()
+        elif titulo == "Laboratório de IA":
+            self._lab_recarregar_projetos()
 
     def _atualizar_operacao(self) -> None:
         operacao = self.operacao.currentData()
@@ -3036,6 +3518,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.processo.kill()
             self.processo.waitForFinished(1500)
         self._pool_painel.waitForDone(5000)
+        self._lab_pool.waitForDone(10000)
         evento.accept()
 
 

@@ -152,7 +152,7 @@ Princípios:
 | E2 | Região simplificada (feito) | P0 | busca de município offline por lista IBGE embutida; desenho de retângulo; importação GeoJSON (Shapefile opcional com dependência opcional); bbox derivada preserva CRS EPSG:4326; favoritos reutilizam `LocalConfigStore`; testes sem rede |
 | E3 | Assistente de download (feito) | P0 | passos 1–7 navegáveis; tabela de cenas a partir de catalogação existente; progresso estruturado `[PROGRESSO] {json}` da CLI (bytes, total, velocidade); cancelar remove `.part`; retomada `Range` testada com servidor fake; limpeza de `.part` órfãos com confirmação |
 | E4 | Resultados agrícolas (feito) | P0 | abas "Talhões (detecção)" e "Culturas (classificação)"; culturas exibem "não determinada" sem modelo aprovado; histórico filtrável; exportação CSV/JSON; nenhum texto menciona hectares |
-| E5 | Datasets do Laboratório | P1 | criar projeto com tipo e esquema de classes versionado; importar patches do catálogo sem copiar GeoTIFF; SHA-256 e detecção de duplicatas; verificação de integridade; filtros por região, data, nuvem e estado de rotulagem |
+| E5 | Datasets do Laboratório (feito) | P1 | criar projeto com tipo e esquema de classes versionado; importar patches do catálogo sem copiar GeoTIFF; SHA-256 e detecção de duplicatas; verificação de integridade; filtros por região, data, nuvem e estado de rotulagem |
 | E6 | Rotulagem | P1 | exportar lote para anotador externo; detectar LabelImg/X-AnyLabeling instalados; importar `.txt`; validador YOLO com mensagens por linha; contagem rotulados/pendentes; tela de atribuição de classe para classificação |
 | E7 | Preparação do treino | P2 | split por grupo espacial sem vazamento (teste: nenhum grupo em dois splits); relatório de desbalanceamento; revisão antes de iniciar; `data.yaml` gerado em pasta versionada |
 | E8 | Execução e painel de treino | P2 | treino em processo separado; épocas, perdas, métricas, CPU/GPU/RAM (psutil/torch) e logs na GUI; cancelamento seguro; retomada só com checkpoint; testado com treinador fake |
@@ -252,6 +252,32 @@ Não verificado: a tela não foi exercitada com uma análise real do `best.pt`
 de patches local está ausente e gerar o dataset e analisar exige uma execução
 longa.
 
+## 9. Entrega E5 — o que mudou
+
+- Nova seção YAML `laboratorio.pasta` (default `data/laboratorio`; pacote em
+  `~/.local/share/sentinel2-mt/laboratorio`), com fallback para configurações
+  antigas e validação de contenção na raiz.
+- `laboratorio/projetos.py`: SQLite com projetos de tipo fixo, esquemas de
+  classes versionados e imutáveis, imagens com SHA-256, safra, grade, região,
+  estado de rotulagem, integridade e duplicatas.
+- `laboratorio/datasets.py`: descoberta pelo catálogo ou, na falta dele, pelos
+  `metadata.json`; importação sem cópia dos recortes do sistema; importação
+  validada e copiada de imagens externas; verificação de integridade; filtros e
+  miniaturas em cache.
+- GUI: página **Laboratório de IA** com tarefas em segundo plano e progresso.
+
+Validação com os dados locais (somente leitura, banco em pasta temporária):
+281 recortes descobertos pela pasta (catálogo ausente) e hash em 0,3 s;
+miniaturas em 2,2 s; integridade em 2,5 s, todos íntegros; nenhuma duplicata;
+safra 2025/2026.
+
+Não incluído nesta entrega: exportação para o formato de treino (vai para a E7,
+junto com a separação espacial), rotulagem (E6). O critério "filtrar por data"
+ficou coberto pela busca textual e pela safra, sem intervalo de datas dedicado.
+
+Dívida técnica: `src/gerar_config_gui.py` passou de 3.500 linhas. Antes da E6,
+convém extrair as páginas (Início, Baixar imagens, Resultados, Laboratório)
+para módulos próprios, mantendo a lógica nos serviços.
 ## Verificação do modelo atual com dados reais (16/11/2026)
 
 Execução real do `best.pt` (GPU) sobre os 281 recortes locais, com o

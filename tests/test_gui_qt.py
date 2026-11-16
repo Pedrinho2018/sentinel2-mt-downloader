@@ -447,6 +447,109 @@ class TestGuiQt(TestCase):
         self.assertEqual(self.janela.titulo_pagina.text(), "Análise da região")
         self.assertEqual(self.janela._resultado_visual.caminho_json, resultado.resolve())
 
+    def _preparar_laboratorio(self):
+        from PIL import Image
+
+        raiz = patch.object(gui, "ROOT", self.pasta)
+        raiz.start()
+        self.addCleanup(raiz.stop)
+        self.janela._salvar_configuracao(avisar=False)
+        for indice, data in enumerate(("2026-03-22", "2025-08-10")):
+            pasta = self.pasta / "data/dataset" / data / "S2-16D_V2_014015_20260322" / f"P{indice}"
+            pasta.mkdir(parents=True)
+            Image.new("RGB", (8, 8), (0, 100 + indice, 0)).save(pasta / "rgb.png")
+            (pasta / "metadata.json").write_text(
+                json.dumps({"patch_id": f"P{indice}", "scene_id": "S2-16D_V2_014015_20260322",
+                            "date": data, "cloud_pct": 5 + indice * 40}),
+                encoding="utf-8",
+            )
+
+    def _aguardar_laboratorio(self) -> None:
+        self.janela._lab_pool.waitForDone(10000)
+        self.app.processEvents()
+        self.app.processEvents()
+
+    def test_abrir_laboratorio_nao_cria_banco_nem_configuracao(self) -> None:
+        raiz = patch.object(gui, "ROOT", self.pasta)
+        raiz.start()
+        self.addCleanup(raiz.stop)
+        config = Path(self.janela.output_path.text())
+
+        self.janela._navegar(self.janela._indice_pagina("Laboratório de IA"))
+
+        self.assertFalse(config.exists())
+        self.assertFalse((self.pasta / "data/laboratorio").exists())
+        self.assertEqual(self.janela.lab_projeto.count(), 0)
+        self.assertIn("Crie um projeto", self.janela.lab_info_projeto.text())
+
+    def test_laboratorio_cria_projeto_e_versiona_classes(self) -> None:
+        self._preparar_laboratorio()
+        self.janela._navegar(self.janela._indice_pagina("Laboratório de IA"))
+        self.assertFalse(self.janela.lab_btn_importar.isEnabled())
+
+        self.assertTrue(self.janela._lab_criar_projeto("Culturas MT", "classificacao", ["soja", "milho", "algodao", "outras"]))
+        self.assertIn("Classificação", self.janela.lab_projeto.currentText())
+        self.assertIn("v1: soja, milho, algodao, outras", self.janela.lab_info_projeto.text())
+        self.assertIn("sem caixas", self.janela.lab_info_projeto.text())
+
+        self.assertTrue(self.janela._lab_salvar_classes(["soja", "milho", "algodao", "pastagem", "outras"]))
+        self.assertIn("v2", self.janela.lab_info_projeto.text())
+        with patch.object(gui.QtWidgets.QMessageBox, "warning") as aviso:
+            self.assertFalse(self.janela._lab_salvar_classes(["Algodão"]))
+        aviso.assert_called_once()
+
+    def test_laboratorio_importa_recortes_filtra_e_verifica(self) -> None:
+        self._preparar_laboratorio()
+        self.janela._lab_criar_projeto("Talhões", "deteccao", ["talhao"])
+
+        self.janela._lab_importar_sistema()
+        self._aguardar_laboratorio()
+
+        self.assertIn("2 recorte(s) encontrados na pasta do dataset", self.janela.lab_status.text())
+        self.assertEqual(self.janela.lab_grade.count(), 2)
+        self.assertIn("2</b> imagem(ns)", self.janela.lab_contagens.text())
+        self.assertFalse(self.janela.lab_grade.item(0).icon().isNull())
+        safras = [self.janela.lab_filtro_safra.itemData(i) for i in range(self.janela.lab_filtro_safra.count())]
+        self.assertEqual(safras, ["", "2025/2026", "2024/2025"])
+
+        self.janela.lab_filtro_nuvem.setValue(20)
+        self.assertEqual(self.janela.lab_grade.count(), 1)
+        self.janela.lab_filtro_nuvem.setValue(100)
+
+        self.janela._lab_importar_sistema()
+        self._aguardar_laboratorio()
+        self.assertIn("0 adicionado(s), 2 já estavam", self.janela.lab_status.text())
+
+        (self.pasta / "data/dataset/2026-03-22/S2-16D_V2_014015_20260322/P0/rgb.png").unlink()
+        self.janela._lab_verificar_integridade()
+        self._aguardar_laboratorio()
+        self.assertIn("1 com problema", self.janela.lab_status.text())
+        self.janela.lab_filtro_problemas.setChecked(True)
+        self.assertEqual(self.janela.lab_grade.count(), 1)
+        self.janela.lab_grade.setCurrentRow(0)
+        self.assertIn("ausente", self.janela.lab_detalhe.text())
+
+    def test_laboratorio_importa_externas_e_detecta_duplicata(self) -> None:
+        from PIL import Image
+
+        self._preparar_laboratorio()
+        self.janela._lab_criar_projeto("Ext", "classificacao", ["soja", "outras"])
+        foto = self.pasta / "fora.png"
+        Image.new("RGB", (6, 6), (9, 9, 9)).save(foto)
+        copia = self.pasta / "fora-copia.png"
+        copia.write_bytes(foto.read_bytes())
+
+        self.janela._lab_importar_externas([foto])
+        self._aguardar_laboratorio()
+        self.janela._lab_importar_sistema()
+        self._aguardar_laboratorio()
+
+        imagens = {i.patch_id: i for i in self.janela._lab_imagens}
+        externas = [i for i in imagens.values() if i.origem == "externa"]
+        self.assertEqual(len(externas), 1)
+        self.assertTrue(externas[0].caminho_rgb.startswith("data/laboratorio/externas/"))
+        self.assertTrue(foto.exists())
+
     def test_salva_yaml_com_os_dados_do_formulario(self) -> None:
         self.janela.nome_regiao.setText("Norte de MT")
         destino = self.janela._salvar_configuracao(avisar=False)
