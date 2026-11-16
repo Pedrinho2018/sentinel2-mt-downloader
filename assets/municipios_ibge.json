@@ -1,0 +1,1566 @@
+{
+ "fonte": "IBGE - API de localidades v1 e malhas v3 (qualidade intermediária)",
+ "gerado_em": "2026-11-16",
+ "crs": "EPSG:4326",
+ "observacao": "bbox aproximado; não substitui o limite oficial do município",
+ "municipios": [
+  {
+   "codigo_ibge": "5100102",
+   "nome": "Acorizal",
+   "uf": "MT",
+   "bbox": [
+    -56.4661,
+    -15.4123,
+    -56.1049,
+    -14.9765
+   ]
+  },
+  {
+   "codigo_ibge": "5100250",
+   "nome": "Alta Floresta",
+   "uf": "MT",
+   "bbox": [
+    -56.9876,
+    -10.6827,
+    -55.8231,
+    -9.4008
+   ]
+  },
+  {
+   "codigo_ibge": "5100300",
+   "nome": "Alto Araguaia",
+   "uf": "MT",
+   "bbox": [
+    -53.9557,
+    -18.0404,
+    -53.0135,
+    -16.8081
+   ]
+  },
+  {
+   "codigo_ibge": "5100359",
+   "nome": "Alto Boa Vista",
+   "uf": "MT",
+   "bbox": [
+    -52.2532,
+    -12.0014,
+    -51.2675,
+    -11.5762
+   ]
+  },
+  {
+   "codigo_ibge": "5100409",
+   "nome": "Alto Garças",
+   "uf": "MT",
+   "bbox": [
+    -54.0169,
+    -17.2501,
+    -53.1473,
+    -16.4339
+   ]
+  },
+  {
+   "codigo_ibge": "5100508",
+   "nome": "Alto Paraguai",
+   "uf": "MT",
+   "bbox": [
+    -56.9863,
+    -15.1451,
+    -56.3869,
+    -14.393
+   ]
+  },
+  {
+   "codigo_ibge": "5100607",
+   "nome": "Alto Taquari",
+   "uf": "MT",
+   "bbox": [
+    -53.5472,
+    -18.0416,
+    -53.0645,
+    -17.5042
+   ]
+  },
+  {
+   "codigo_ibge": "5100805",
+   "nome": "Apiacás",
+   "uf": "MT",
+   "bbox": [
+    -58.568,
+    -9.8215,
+    -57.0392,
+    -7.349
+   ]
+  },
+  {
+   "codigo_ibge": "5101001",
+   "nome": "Araguaiana",
+   "uf": "MT",
+   "bbox": [
+    -52.1816,
+    -15.8493,
+    -51.3499,
+    -14.3548
+   ]
+  },
+  {
+   "codigo_ibge": "5101209",
+   "nome": "Araguainha",
+   "uf": "MT",
+   "bbox": [
+    -53.362,
+    -16.8697,
+    -52.914,
+    -16.583
+   ]
+  },
+  {
+   "codigo_ibge": "5101258",
+   "nome": "Araputanga",
+   "uf": "MT",
+   "bbox": [
+    -58.7529,
+    -15.5254,
+    -58.2211,
+    -14.9999
+   ]
+  },
+  {
+   "codigo_ibge": "5101308",
+   "nome": "Arenápolis",
+   "uf": "MT",
+   "bbox": [
+    -56.984,
+    -14.6491,
+    -56.718,
+    -14.3609
+   ]
+  },
+  {
+   "codigo_ibge": "5101407",
+   "nome": "Aripuanã",
+   "uf": "MT",
+   "bbox": [
+    -60.7051,
+    -10.9191,
+    -58.7965,
+    -9.2883
+   ]
+  },
+  {
+   "codigo_ibge": "5101704",
+   "nome": "Barra do Bugres",
+   "uf": "MT",
+   "bbox": [
+    -58.8596,
+    -15.6472,
+    -56.8064,
+    -14.5928
+   ]
+  },
+  {
+   "codigo_ibge": "5101803",
+   "nome": "Barra do Garças",
+   "uf": "MT",
+   "bbox": [
+    -53.1492,
+    -15.9117,
+    -51.9721,
+    -14.802
+   ]
+  },
+  {
+   "codigo_ibge": "5101605",
+   "nome": "Barão de Melgaço",
+   "uf": "MT",
+   "bbox": [
+    -56.7237,
+    -17.3673,
+    -55.4937,
+    -16.1228
+   ]
+  },
+  {
+   "codigo_ibge": "5101852",
+   "nome": "Bom Jesus do Araguaia",
+   "uf": "MT",
+   "bbox": [
+    -52.1745,
+    -12.5473,
+    -51.1257,
+    -11.8577
+   ]
+  },
+  {
+   "codigo_ibge": "5101902",
+   "nome": "Brasnorte",
+   "uf": "MT",
+   "bbox": [
+    -58.5277,
+    -13.2696,
+    -57.2927,
+    -10.9509
+   ]
+  },
+  {
+   "codigo_ibge": "5102603",
+   "nome": "Campinápolis",
+   "uf": "MT",
+   "bbox": [
+    -53.4672,
+    -14.8793,
+    -52.6865,
+    -13.6351
+   ]
+  },
+  {
+   "codigo_ibge": "5102637",
+   "nome": "Campo Novo do Parecis",
+   "uf": "MT",
+   "bbox": [
+    -58.4081,
+    -14.3858,
+    -57.348,
+    -12.9304
+   ]
+  },
+  {
+   "codigo_ibge": "5102678",
+   "nome": "Campo Verde",
+   "uf": "MT",
+   "bbox": [
+    -55.4425,
+    -15.8975,
+    -54.4385,
+    -14.9528
+   ]
+  },
+  {
+   "codigo_ibge": "5102686",
+   "nome": "Campos de Júlio",
+   "uf": "MT",
+   "bbox": [
+    -59.4588,
+    -14.5101,
+    -58.9133,
+    -12.6415
+   ]
+  },
+  {
+   "codigo_ibge": "5102694",
+   "nome": "Canabrava do Norte",
+   "uf": "MT",
+   "bbox": [
+    -52.2294,
+    -11.5264,
+    -51.3974,
+    -10.9367
+   ]
+  },
+  {
+   "codigo_ibge": "5102702",
+   "nome": "Canarana",
+   "uf": "MT",
+   "bbox": [
+    -53.101,
+    -13.7779,
+    -51.3808,
+    -12.6028
+   ]
+  },
+  {
+   "codigo_ibge": "5102793",
+   "nome": "Carlinda",
+   "uf": "MT",
+   "bbox": [
+    -56.2396,
+    -10.3961,
+    -55.5576,
+    -9.7327
+   ]
+  },
+  {
+   "codigo_ibge": "5102850",
+   "nome": "Castanheira",
+   "uf": "MT",
+   "bbox": [
+    -58.9986,
+    -11.3014,
+    -58.3309,
+    -10.5665
+   ]
+  },
+  {
+   "codigo_ibge": "5103007",
+   "nome": "Chapada dos Guimarães",
+   "uf": "MT",
+   "bbox": [
+    -56.2423,
+    -15.6337,
+    -54.8752,
+    -14.5678
+   ]
+  },
+  {
+   "codigo_ibge": "5103056",
+   "nome": "Cláudia",
+   "uf": "MT",
+   "bbox": [
+    -55.4687,
+    -11.8145,
+    -54.6819,
+    -11.1461
+   ]
+  },
+  {
+   "codigo_ibge": "5103106",
+   "nome": "Cocalinho",
+   "uf": "MT",
+   "bbox": [
+    -51.7315,
+    -15.0444,
+    -50.4996,
+    -12.646
+   ]
+  },
+  {
+   "codigo_ibge": "5103254",
+   "nome": "Colniza",
+   "uf": "MT",
+   "bbox": [
+    -61.6334,
+    -10.0495,
+    -58.9384,
+    -8.7966
+   ]
+  },
+  {
+   "codigo_ibge": "5103205",
+   "nome": "Colíder",
+   "uf": "MT",
+   "bbox": [
+    -55.707,
+    -11.0176,
+    -55.1581,
+    -10.1266
+   ]
+  },
+  {
+   "codigo_ibge": "5103304",
+   "nome": "Comodoro",
+   "uf": "MT",
+   "bbox": [
+    -60.7147,
+    -14.1782,
+    -58.8462,
+    -12.2115
+   ]
+  },
+  {
+   "codigo_ibge": "5103353",
+   "nome": "Confresa",
+   "uf": "MT",
+   "bbox": [
+    -52.2168,
+    -10.7486,
+    -51.1531,
+    -10.0679
+   ]
+  },
+  {
+   "codigo_ibge": "5103361",
+   "nome": "Conquista D'Oeste",
+   "uf": "MT",
+   "bbox": [
+    -59.6445,
+    -14.9625,
+    -59.037,
+    -14.2764
+   ]
+  },
+  {
+   "codigo_ibge": "5103379",
+   "nome": "Cotriguaçu",
+   "uf": "MT",
+   "bbox": [
+    -59.1274,
+    -10.1313,
+    -58.1946,
+    -8.7987
+   ]
+  },
+  {
+   "codigo_ibge": "5103403",
+   "nome": "Cuiabá",
+   "uf": "MT",
+   "bbox": [
+    -56.302,
+    -16.531,
+    -55.1273,
+    -15.0713
+   ]
+  },
+  {
+   "codigo_ibge": "5103437",
+   "nome": "Curvelândia",
+   "uf": "MT",
+   "bbox": [
+    -57.9907,
+    -15.7748,
+    -57.7832,
+    -15.467
+   ]
+  },
+  {
+   "codigo_ibge": "5102504",
+   "nome": "Cáceres",
+   "uf": "MT",
+   "bbox": [
+    -58.7961,
+    -17.627,
+    -57.0075,
+    -15.4545
+   ]
+  },
+  {
+   "codigo_ibge": "5103452",
+   "nome": "Denise",
+   "uf": "MT",
+   "bbox": [
+    -57.1605,
+    -14.9402,
+    -56.7205,
+    -14.503
+   ]
+  },
+  {
+   "codigo_ibge": "5103502",
+   "nome": "Diamantino",
+   "uf": "MT",
+   "bbox": [
+    -57.7347,
+    -14.6826,
+    -55.9768,
+    -13.5864
+   ]
+  },
+  {
+   "codigo_ibge": "5103601",
+   "nome": "Dom Aquino",
+   "uf": "MT",
+   "bbox": [
+    -55.0235,
+    -15.9829,
+    -54.5065,
+    -15.3611
+   ]
+  },
+  {
+   "codigo_ibge": "5103700",
+   "nome": "Feliz Natal",
+   "uf": "MT",
+   "bbox": [
+    -55.278,
+    -12.7416,
+    -53.2398,
+    -10.9577
+   ]
+  },
+  {
+   "codigo_ibge": "5103809",
+   "nome": "Figueirópolis D'Oeste",
+   "uf": "MT",
+   "bbox": [
+    -58.8699,
+    -15.693,
+    -58.5496,
+    -15.2945
+   ]
+  },
+  {
+   "codigo_ibge": "5103858",
+   "nome": "Gaúcha do Norte",
+   "uf": "MT",
+   "bbox": [
+    -54.0914,
+    -13.8143,
+    -52.8133,
+    -11.9311
+   ]
+  },
+  {
+   "codigo_ibge": "5103908",
+   "nome": "General Carneiro",
+   "uf": "MT",
+   "bbox": [
+    -53.9377,
+    -15.8854,
+    -52.7032,
+    -15.2123
+   ]
+  },
+  {
+   "codigo_ibge": "5103957",
+   "nome": "Glória D'Oeste",
+   "uf": "MT",
+   "bbox": [
+    -58.5604,
+    -16.0454,
+    -58.1321,
+    -15.693
+   ]
+  },
+  {
+   "codigo_ibge": "5104104",
+   "nome": "Guarantã do Norte",
+   "uf": "MT",
+   "bbox": [
+    -55.1378,
+    -10.0553,
+    -54.1068,
+    -9.5053
+   ]
+  },
+  {
+   "codigo_ibge": "5104203",
+   "nome": "Guiratinga",
+   "uf": "MT",
+   "bbox": [
+    -54.2367,
+    -16.7992,
+    -52.9785,
+    -15.9561
+   ]
+  },
+  {
+   "codigo_ibge": "5104500",
+   "nome": "Indiavaí",
+   "uf": "MT",
+   "bbox": [
+    -58.7301,
+    -15.515,
+    -58.4656,
+    -15.1551
+   ]
+  },
+  {
+   "codigo_ibge": "5104526",
+   "nome": "Ipiranga do Norte",
+   "uf": "MT",
+   "bbox": [
+    -56.4153,
+    -12.4415,
+    -55.6999,
+    -11.446
+   ]
+  },
+  {
+   "codigo_ibge": "5104542",
+   "nome": "Itanhangá",
+   "uf": "MT",
+   "bbox": [
+    -57.1449,
+    -12.374,
+    -56.389,
+    -11.9138
+   ]
+  },
+  {
+   "codigo_ibge": "5104559",
+   "nome": "Itaúba",
+   "uf": "MT",
+   "bbox": [
+    -56.321,
+    -11.4048,
+    -54.915,
+    -10.8508
+   ]
+  },
+  {
+   "codigo_ibge": "5104609",
+   "nome": "Itiquira",
+   "uf": "MT",
+   "bbox": [
+    -55.6028,
+    -17.6617,
+    -53.6801,
+    -16.9335
+   ]
+  },
+  {
+   "codigo_ibge": "5104807",
+   "nome": "Jaciara",
+   "uf": "MT",
+   "bbox": [
+    -55.5408,
+    -16.3308,
+    -54.9124,
+    -15.6021
+   ]
+  },
+  {
+   "codigo_ibge": "5104906",
+   "nome": "Jangada",
+   "uf": "MT",
+   "bbox": [
+    -56.9446,
+    -15.5407,
+    -56.3555,
+    -15.1192
+   ]
+  },
+  {
+   "codigo_ibge": "5105002",
+   "nome": "Jauru",
+   "uf": "MT",
+   "bbox": [
+    -59.0932,
+    -15.6004,
+    -58.6965,
+    -15.0
+   ]
+  },
+  {
+   "codigo_ibge": "5105101",
+   "nome": "Juara",
+   "uf": "MT",
+   "bbox": [
+    -58.4191,
+    -12.2093,
+    -56.7135,
+    -10.2495
+   ]
+  },
+  {
+   "codigo_ibge": "5105176",
+   "nome": "Juruena",
+   "uf": "MT",
+   "bbox": [
+    -58.9272,
+    -10.7907,
+    -58.3185,
+    -10.1281
+   ]
+  },
+  {
+   "codigo_ibge": "5105200",
+   "nome": "Juscimeira",
+   "uf": "MT",
+   "bbox": [
+    -55.2553,
+    -16.5158,
+    -54.4389,
+    -15.8815
+   ]
+  },
+  {
+   "codigo_ibge": "5105150",
+   "nome": "Juína",
+   "uf": "MT",
+   "bbox": [
+    -60.4639,
+    -12.3675,
+    -58.3165,
+    -10.6184
+   ]
+  },
+  {
+   "codigo_ibge": "5105234",
+   "nome": "Lambari D'Oeste",
+   "uf": "MT",
+   "bbox": [
+    -58.1035,
+    -15.7737,
+    -57.508,
+    -15.1315
+   ]
+  },
+  {
+   "codigo_ibge": "5105259",
+   "nome": "Lucas do Rio Verde",
+   "uf": "MT",
+   "bbox": [
+    -56.6575,
+    -13.4575,
+    -55.8743,
+    -12.6382
+   ]
+  },
+  {
+   "codigo_ibge": "5105309",
+   "nome": "Luciara",
+   "uf": "MT",
+   "bbox": [
+    -51.5192,
+    -11.3131,
+    -50.5706,
+    -10.6465
+   ]
+  },
+  {
+   "codigo_ibge": "5105580",
+   "nome": "Marcelândia",
+   "uf": "MT",
+   "bbox": [
+    -54.8937,
+    -11.4132,
+    -53.0984,
+    -10.4333
+   ]
+  },
+  {
+   "codigo_ibge": "5105606",
+   "nome": "Matupá",
+   "uf": "MT",
+   "bbox": [
+    -55.2422,
+    -10.3899,
+    -53.5891,
+    -9.5719
+   ]
+  },
+  {
+   "codigo_ibge": "5105622",
+   "nome": "Mirassol d'Oeste",
+   "uf": "MT",
+   "bbox": [
+    -58.2871,
+    -15.8479,
+    -57.879,
+    -15.3588
+   ]
+  },
+  {
+   "codigo_ibge": "5105903",
+   "nome": "Nobres",
+   "uf": "MT",
+   "bbox": [
+    -56.4784,
+    -14.7681,
+    -55.201,
+    -14.0051
+   ]
+  },
+  {
+   "codigo_ibge": "5106000",
+   "nome": "Nortelândia",
+   "uf": "MT",
+   "bbox": [
+    -56.9517,
+    -14.6491,
+    -56.5196,
+    -14.1326
+   ]
+  },
+  {
+   "codigo_ibge": "5106109",
+   "nome": "Nossa Senhora do Livramento",
+   "uf": "MT",
+   "bbox": [
+    -57.2248,
+    -16.4091,
+    -55.9489,
+    -15.4343
+   ]
+  },
+  {
+   "codigo_ibge": "5106158",
+   "nome": "Nova Bandeirantes",
+   "uf": "MT",
+   "bbox": [
+    -58.6571,
+    -10.452,
+    -57.5767,
+    -8.9403
+   ]
+  },
+  {
+   "codigo_ibge": "5106208",
+   "nome": "Nova Brasilândia",
+   "uf": "MT",
+   "bbox": [
+    -55.6516,
+    -15.0665,
+    -54.4966,
+    -14.4194
+   ]
+  },
+  {
+   "codigo_ibge": "5106216",
+   "nome": "Nova Canaã do Norte",
+   "uf": "MT",
+   "bbox": [
+    -56.5959,
+    -11.1011,
+    -55.5947,
+    -10.232
+   ]
+  },
+  {
+   "codigo_ibge": "5108808",
+   "nome": "Nova Guarita",
+   "uf": "MT",
+   "bbox": [
+    -55.5725,
+    -10.5143,
+    -55.1552,
+    -10.057
+   ]
+  },
+  {
+   "codigo_ibge": "5106182",
+   "nome": "Nova Lacerda",
+   "uf": "MT",
+   "bbox": [
+    -60.3101,
+    -14.8198,
+    -59.3118,
+    -13.9817
+   ]
+  },
+  {
+   "codigo_ibge": "5108857",
+   "nome": "Nova Marilândia",
+   "uf": "MT",
+   "bbox": [
+    -57.7329,
+    -14.4356,
+    -56.8667,
+    -14.1544
+   ]
+  },
+  {
+   "codigo_ibge": "5108907",
+   "nome": "Nova Maringá",
+   "uf": "MT",
+   "bbox": [
+    -57.7341,
+    -13.8076,
+    -56.7399,
+    -11.7091
+   ]
+  },
+  {
+   "codigo_ibge": "5108956",
+   "nome": "Nova Monte Verde",
+   "uf": "MT",
+   "bbox": [
+    -57.6965,
+    -10.3254,
+    -56.8417,
+    -9.5294
+   ]
+  },
+  {
+   "codigo_ibge": "5106224",
+   "nome": "Nova Mutum",
+   "uf": "MT",
+   "bbox": [
+    -56.7733,
+    -14.223,
+    -55.3817,
+    -12.8205
+   ]
+  },
+  {
+   "codigo_ibge": "5106174",
+   "nome": "Nova Nazaré",
+   "uf": "MT",
+   "bbox": [
+    -52.3395,
+    -14.6871,
+    -51.4639,
+    -13.6071
+   ]
+  },
+  {
+   "codigo_ibge": "5106232",
+   "nome": "Nova Olímpia",
+   "uf": "MT",
+   "bbox": [
+    -57.7768,
+    -14.9566,
+    -57.0815,
+    -14.608
+   ]
+  },
+  {
+   "codigo_ibge": "5106190",
+   "nome": "Nova Santa Helena",
+   "uf": "MT",
+   "bbox": [
+    -55.2962,
+    -11.2873,
+    -54.6033,
+    -10.5374
+   ]
+  },
+  {
+   "codigo_ibge": "5106240",
+   "nome": "Nova Ubiratã",
+   "uf": "MT",
+   "bbox": [
+    -55.4567,
+    -13.8718,
+    -53.7793,
+    -12.0621
+   ]
+  },
+  {
+   "codigo_ibge": "5106257",
+   "nome": "Nova Xavantina",
+   "uf": "MT",
+   "bbox": [
+    -52.9316,
+    -15.1772,
+    -51.6914,
+    -14.1779
+   ]
+  },
+  {
+   "codigo_ibge": "5106273",
+   "nome": "Novo Horizonte do Norte",
+   "uf": "MT",
+   "bbox": [
+    -57.5566,
+    -11.5239,
+    -57.0277,
+    -11.2479
+   ]
+  },
+  {
+   "codigo_ibge": "5106265",
+   "nome": "Novo Mundo",
+   "uf": "MT",
+   "bbox": [
+    -55.9339,
+    -10.1941,
+    -54.9572,
+    -9.4343
+   ]
+  },
+  {
+   "codigo_ibge": "5106315",
+   "nome": "Novo Santo Antônio",
+   "uf": "MT",
+   "bbox": [
+    -51.3103,
+    -12.892,
+    -50.6183,
+    -11.7266
+   ]
+  },
+  {
+   "codigo_ibge": "5106281",
+   "nome": "Novo São Joaquim",
+   "uf": "MT",
+   "bbox": [
+    -53.9457,
+    -15.4005,
+    -52.6416,
+    -14.7256
+   ]
+  },
+  {
+   "codigo_ibge": "5106307",
+   "nome": "Paranatinga",
+   "uf": "MT",
+   "bbox": [
+    -55.1001,
+    -14.7328,
+    -53.224,
+    -11.9486
+   ]
+  },
+  {
+   "codigo_ibge": "5106299",
+   "nome": "Paranaíta",
+   "uf": "MT",
+   "bbox": [
+    -57.1321,
+    -9.9481,
+    -56.2533,
+    -9.1824
+   ]
+  },
+  {
+   "codigo_ibge": "5106372",
+   "nome": "Pedra Preta",
+   "uf": "MT",
+   "bbox": [
+    -54.5985,
+    -17.1118,
+    -53.8261,
+    -16.468
+   ]
+  },
+  {
+   "codigo_ibge": "5106422",
+   "nome": "Peixoto de Azevedo",
+   "uf": "MT",
+   "bbox": [
+    -55.1539,
+    -10.7777,
+    -52.6193,
+    -9.611
+   ]
+  },
+  {
+   "codigo_ibge": "5106455",
+   "nome": "Planalto da Serra",
+   "uf": "MT",
+   "bbox": [
+    -54.9505,
+    -14.8026,
+    -54.3297,
+    -14.2796
+   ]
+  },
+  {
+   "codigo_ibge": "5106505",
+   "nome": "Poconé",
+   "uf": "MT",
+   "bbox": [
+    -57.6927,
+    -17.9026,
+    -56.216,
+    -15.6977
+   ]
+  },
+  {
+   "codigo_ibge": "5106653",
+   "nome": "Pontal do Araguaia",
+   "uf": "MT",
+   "bbox": [
+    -53.0779,
+    -16.1339,
+    -52.2523,
+    -15.6996
+   ]
+  },
+  {
+   "codigo_ibge": "5106703",
+   "nome": "Ponte Branca",
+   "uf": "MT",
+   "bbox": [
+    -53.1655,
+    -16.8127,
+    -52.7153,
+    -16.527
+   ]
+  },
+  {
+   "codigo_ibge": "5106752",
+   "nome": "Pontes e Lacerda",
+   "uf": "MT",
+   "bbox": [
+    -60.0483,
+    -16.1955,
+    -58.9648,
+    -14.6614
+   ]
+  },
+  {
+   "codigo_ibge": "5106778",
+   "nome": "Porto Alegre do Norte",
+   "uf": "MT",
+   "bbox": [
+    -52.2046,
+    -11.0405,
+    -51.0062,
+    -10.4874
+   ]
+  },
+  {
+   "codigo_ibge": "5106828",
+   "nome": "Porto Esperidião",
+   "uf": "MT",
+   "bbox": [
+    -59.5277,
+    -16.308,
+    -58.3908,
+    -15.4777
+   ]
+  },
+  {
+   "codigo_ibge": "5106851",
+   "nome": "Porto Estrela",
+   "uf": "MT",
+   "bbox": [
+    -57.519,
+    -15.8601,
+    -56.9576,
+    -15.1998
+   ]
+  },
+  {
+   "codigo_ibge": "5106802",
+   "nome": "Porto dos Gaúchos",
+   "uf": "MT",
+   "bbox": [
+    -57.4429,
+    -12.1846,
+    -55.9645,
+    -11.3591
+   ]
+  },
+  {
+   "codigo_ibge": "5107008",
+   "nome": "Poxoréu",
+   "uf": "MT",
+   "bbox": [
+    -54.6959,
+    -16.3715,
+    -53.733,
+    -15.2454
+   ]
+  },
+  {
+   "codigo_ibge": "5107040",
+   "nome": "Primavera do Leste",
+   "uf": "MT",
+   "bbox": [
+    -54.697,
+    -15.6758,
+    -53.7772,
+    -14.6039
+   ]
+  },
+  {
+   "codigo_ibge": "5107065",
+   "nome": "Querência",
+   "uf": "MT",
+   "bbox": [
+    -53.6084,
+    -13.2408,
+    -52.0387,
+    -11.2111
+   ]
+  },
+  {
+   "codigo_ibge": "5107156",
+   "nome": "Reserva do Cabaçal",
+   "uf": "MT",
+   "bbox": [
+    -58.7223,
+    -15.1859,
+    -58.2534,
+    -14.6835
+   ]
+  },
+  {
+   "codigo_ibge": "5107180",
+   "nome": "Ribeirão Cascalheira",
+   "uf": "MT",
+   "bbox": [
+    -52.1441,
+    -13.5153,
+    -50.9237,
+    -12.2469
+   ]
+  },
+  {
+   "codigo_ibge": "5107198",
+   "nome": "Ribeirãozinho",
+   "uf": "MT",
+   "bbox": [
+    -52.9471,
+    -16.6186,
+    -52.6051,
+    -16.2982
+   ]
+  },
+  {
+   "codigo_ibge": "5107206",
+   "nome": "Rio Branco",
+   "uf": "MT",
+   "bbox": [
+    -58.284,
+    -15.4134,
+    -57.9608,
+    -15.1506
+   ]
+  },
+  {
+   "codigo_ibge": "5107578",
+   "nome": "Rondolândia",
+   "uf": "MT",
+   "bbox": [
+    -61.6016,
+    -10.9922,
+    -60.3964,
+    -9.6366
+   ]
+  },
+  {
+   "codigo_ibge": "5107602",
+   "nome": "Rondonópolis",
+   "uf": "MT",
+   "bbox": [
+    -54.9953,
+    -17.1004,
+    -54.1894,
+    -16.0684
+   ]
+  },
+  {
+   "codigo_ibge": "5107701",
+   "nome": "Rosário Oeste",
+   "uf": "MT",
+   "bbox": [
+    -56.9905,
+    -15.5433,
+    -54.8089,
+    -14.2033
+   ]
+  },
+  {
+   "codigo_ibge": "5107750",
+   "nome": "Salto do Céu",
+   "uf": "MT",
+   "bbox": [
+    -58.3455,
+    -15.2373,
+    -57.6675,
+    -14.7681
+   ]
+  },
+  {
+   "codigo_ibge": "5107248",
+   "nome": "Santa Carmem",
+   "uf": "MT",
+   "bbox": [
+    -55.4099,
+    -12.2455,
+    -54.2863,
+    -11.6492
+   ]
+  },
+  {
+   "codigo_ibge": "5107743",
+   "nome": "Santa Cruz do Xingu",
+   "uf": "MT",
+   "bbox": [
+    -53.0033,
+    -10.4004,
+    -52.0616,
+    -9.6823
+   ]
+  },
+  {
+   "codigo_ibge": "5107768",
+   "nome": "Santa Rita do Trivelato",
+   "uf": "MT",
+   "bbox": [
+    -55.7694,
+    -14.2513,
+    -54.8679,
+    -13.3115
+   ]
+  },
+  {
+   "codigo_ibge": "5107776",
+   "nome": "Santa Terezinha",
+   "uf": "MT",
+   "bbox": [
+    -51.3718,
+    -10.7763,
+    -50.2248,
+    -9.8006
+   ]
+  },
+  {
+   "codigo_ibge": "5107263",
+   "nome": "Santo Afonso",
+   "uf": "MT",
+   "bbox": [
+    -57.7198,
+    -14.5748,
+    -56.93,
+    -14.3076
+   ]
+  },
+  {
+   "codigo_ibge": "5107800",
+   "nome": "Santo Antônio de Leverger",
+   "uf": "MT",
+   "bbox": [
+    -56.1459,
+    -17.3713,
+    -54.8869,
+    -15.6987
+   ]
+  },
+  {
+   "codigo_ibge": "5107792",
+   "nome": "Santo Antônio do Leste",
+   "uf": "MT",
+   "bbox": [
+    -54.1974,
+    -15.133,
+    -53.2917,
+    -14.4035
+   ]
+  },
+  {
+   "codigo_ibge": "5107875",
+   "nome": "Sapezal",
+   "uf": "MT",
+   "bbox": [
+    -59.0456,
+    -14.0,
+    -58.0774,
+    -11.9189
+   ]
+  },
+  {
+   "codigo_ibge": "5107883",
+   "nome": "Serra Nova Dourada",
+   "uf": "MT",
+   "bbox": [
+    -51.6623,
+    -12.3523,
+    -51.0847,
+    -11.7886
+   ]
+  },
+  {
+   "codigo_ibge": "5107909",
+   "nome": "Sinop",
+   "uf": "MT",
+   "bbox": [
+    -55.8359,
+    -12.1871,
+    -55.0671,
+    -11.298
+   ]
+  },
+  {
+   "codigo_ibge": "5107925",
+   "nome": "Sorriso",
+   "uf": "MT",
+   "bbox": [
+    -56.1167,
+    -13.6653,
+    -55.0851,
+    -11.7216
+   ]
+  },
+  {
+   "codigo_ibge": "5107859",
+   "nome": "São Félix do Araguaia",
+   "uf": "MT",
+   "bbox": [
+    -53.3196,
+    -12.1247,
+    -50.6575,
+    -10.8305
+   ]
+  },
+  {
+   "codigo_ibge": "5107297",
+   "nome": "São José do Povo",
+   "uf": "MT",
+   "bbox": [
+    -54.3812,
+    -16.628,
+    -54.1639,
+    -16.3163
+   ]
+  },
+  {
+   "codigo_ibge": "5107305",
+   "nome": "São José do Rio Claro",
+   "uf": "MT",
+   "bbox": [
+    -57.3469,
+    -13.9183,
+    -56.3831,
+    -12.9547
+   ]
+  },
+  {
+   "codigo_ibge": "5107354",
+   "nome": "São José do Xingu",
+   "uf": "MT",
+   "bbox": [
+    -53.1262,
+    -11.1087,
+    -52.144,
+    -10.2581
+   ]
+  },
+  {
+   "codigo_ibge": "5107107",
+   "nome": "São José dos Quatro Marcos",
+   "uf": "MT",
+   "bbox": [
+    -58.5872,
+    -15.7126,
+    -58.0183,
+    -15.3504
+   ]
+  },
+  {
+   "codigo_ibge": "5107404",
+   "nome": "São Pedro da Cipa",
+   "uf": "MT",
+   "bbox": [
+    -54.9457,
+    -16.0556,
+    -54.5616,
+    -15.8815
+   ]
+  },
+  {
+   "codigo_ibge": "5107941",
+   "nome": "Tabaporã",
+   "uf": "MT",
+   "bbox": [
+    -57.139,
+    -11.6446,
+    -55.7801,
+    -10.4923
+   ]
+  },
+  {
+   "codigo_ibge": "5107958",
+   "nome": "Tangará da Serra",
+   "uf": "MT",
+   "bbox": [
+    -59.1077,
+    -14.9828,
+    -56.9497,
+    -14.0
+   ]
+  },
+  {
+   "codigo_ibge": "5108006",
+   "nome": "Tapurah",
+   "uf": "MT",
+   "bbox": [
+    -56.9787,
+    -12.901,
+    -56.0597,
+    -12.2478
+   ]
+  },
+  {
+   "codigo_ibge": "5108055",
+   "nome": "Terra Nova do Norte",
+   "uf": "MT",
+   "bbox": [
+    -55.3342,
+    -10.7438,
+    -54.6399,
+    -10.2179
+   ]
+  },
+  {
+   "codigo_ibge": "5108105",
+   "nome": "Tesouro",
+   "uf": "MT",
+   "bbox": [
+    -53.8789,
+    -16.2775,
+    -53.0259,
+    -15.5727
+   ]
+  },
+  {
+   "codigo_ibge": "5108204",
+   "nome": "Torixoréu",
+   "uf": "MT",
+   "bbox": [
+    -53.2109,
+    -16.5699,
+    -52.4717,
+    -16.0329
+   ]
+  },
+  {
+   "codigo_ibge": "5108303",
+   "nome": "União do Sul",
+   "uf": "MT",
+   "bbox": [
+    -54.731,
+    -11.8847,
+    -53.7792,
+    -11.1837
+   ]
+  },
+  {
+   "codigo_ibge": "5108352",
+   "nome": "Vale de São Domingos",
+   "uf": "MT",
+   "bbox": [
+    -59.2256,
+    -15.4669,
+    -58.7567,
+    -14.5858
+   ]
+  },
+  {
+   "codigo_ibge": "5108501",
+   "nome": "Vera",
+   "uf": "MT",
+   "bbox": [
+    -55.59,
+    -13.6634,
+    -55.0716,
+    -12.0896
+   ]
+  },
+  {
+   "codigo_ibge": "5105507",
+   "nome": "Vila Bela da Santíssima Trindade",
+   "uf": "MT",
+   "bbox": [
+    -60.5757,
+    -16.2796,
+    -59.4324,
+    -13.9929
+   ]
+  },
+  {
+   "codigo_ibge": "5108600",
+   "nome": "Vila Rica",
+   "uf": "MT",
+   "bbox": [
+    -52.2749,
+    -10.3245,
+    -50.5701,
+    -9.7077
+   ]
+  },
+  {
+   "codigo_ibge": "5108402",
+   "nome": "Várzea Grande",
+   "uf": "MT",
+   "bbox": [
+    -56.4246,
+    -15.7773,
+    -56.0696,
+    -15.3401
+   ]
+  },
+  {
+   "codigo_ibge": "5100201",
+   "nome": "Água Boa",
+   "uf": "MT",
+   "bbox": [
+    -53.1144,
+    -14.5414,
+    -51.8235,
+    -13.6351
+   ]
+  }
+ ],
+ "municipios_sem_malha": [
+  {
+   "codigo_ibge": "5101837",
+   "nome": "Boa Esperança do Norte",
+   "uf": "MT"
+  }
+ ]
+}

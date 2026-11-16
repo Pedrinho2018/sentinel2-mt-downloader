@@ -35,8 +35,13 @@ URL_MALHA = (
 SAIDA_PADRAO = RAIZ / "assets" / "municipios_ibge.json"
 
 
-def montar_lista(uf: str, nomes: list[dict], malha: dict) -> list[dict]:
-    """Combina nomes e malha do IBGE; falha se faltar a geometria de algum município."""
+def montar_lista(uf: str, nomes: list[dict], malha: dict) -> tuple[list[dict], list[dict]]:
+    """Combina nomes e malha do IBGE.
+
+    Retorna os municípios com retângulo e, separadamente, os que ainda não têm
+    geometria publicada na malha (por exemplo, municípios instalados depois da
+    última malha disponível). Esses não recebem retângulo inventado.
+    """
     por_codigo = {str(item["id"]): str(item["nome"]) for item in nomes}
     municipios: list[dict] = []
     for feicao in malha.get("features", []):
@@ -52,10 +57,15 @@ def montar_lista(uf: str, nomes: list[dict], malha: dict) -> list[dict]:
                 "bbox": [round(valor, 6) for valor in bbox],
             }
         )
-    faltantes = set(por_codigo) - {item["codigo_ibge"] for item in municipios}
-    if faltantes:
-        raise ValueError(f"Malha sem {len(faltantes)} município(s) de {uf}: {sorted(faltantes)[:5]}")
-    return sorted(municipios, key=lambda item: item["nome"])
+    if not municipios:
+        raise ValueError(f"A malha do IBGE não trouxe municípios de {uf}")
+    com_malha = {item["codigo_ibge"] for item in municipios}
+    sem_malha = [
+        {"codigo_ibge": codigo, "nome": nome, "uf": uf.upper()}
+        for codigo, nome in sorted(por_codigo.items())
+        if codigo not in com_malha
+    ]
+    return sorted(municipios, key=lambda item: item["nome"]), sem_malha
 
 
 def _baixar_json(url: str) -> object:
@@ -73,20 +83,25 @@ def main() -> int:
     args = parser.parse_args()
     ufs = [uf.upper() for uf in (args.uf or ["MT"])]
     todos: list[dict] = []
+    todos_sem_malha: list[dict] = []
     for uf in ufs:
         if len(uf) != 2 or not uf.isalpha():
             parser.error(f"UF inválida: {uf}")
         nomes = _baixar_json(URL_NOMES.format(uf=uf))
         malha = _baixar_json(URL_MALHA.format(uf=uf))
-        lista = montar_lista(uf, nomes, malha)
-        print(f"{uf}: {len(lista)} municípios")
+        lista, sem_malha = montar_lista(uf, nomes, malha)
+        print(f"{uf}: {len(lista)} municípios com retângulo")
+        for item in sem_malha:
+            print(f"  AVISO: {item['nome']} ({item['codigo_ibge']}) sem geometria na malha; omitido da busca")
         todos.extend(lista)
+        todos_sem_malha.extend(sem_malha)
     documento = {
         "fonte": "IBGE - API de localidades v1 e malhas v3 (qualidade intermediária)",
         "gerado_em": date.today().isoformat(),
         "crs": "EPSG:4326",
         "observacao": "bbox aproximado; não substitui o limite oficial do município",
         "municipios": todos,
+        "municipios_sem_malha": todos_sem_malha,
     }
     args.saida.parent.mkdir(parents=True, exist_ok=True)
     temporario = args.saida.with_suffix(".tmp")

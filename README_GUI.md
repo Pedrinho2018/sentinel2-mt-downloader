@@ -43,7 +43,10 @@ python iniciar_gui.py --setup-only
   partir da API do IBGE com `tools/gerar_municipios_ibge.py --uf MT`; a busca não
   usa a internet. Sem esse arquivo, a GUI mostra como gerá-lo. O retângulo de
   cada município é aproximado (malha de qualidade intermediária) e pode ser
-  ajustado.
+  ajustado. A lista atual (gerada em 16/11/2026) tem 141 municípios de MT;
+  Boa Esperança do Norte (5101837) ainda não tem geometria na malha do IBGE e
+  fica registrado em `municipios_sem_malha`, fora da busca, até a malha ser
+  publicada. Para essa área, desenhe no mapa ou importe um limite.
 - **Desenhar área**: ative o botão e clique e arraste no mapa; a área é aplicada
   ao soltar o mouse. `Shift + arrastar` continua funcionando.
 - **Importar limite…**: aceita GeoJSON (`.geojson`, `.json`) e Shapefile (`.shp`

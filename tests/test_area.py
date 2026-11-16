@@ -253,10 +253,14 @@ class TestMunicipios(TestCase):
             ],
         }
 
-        lista = modulo.montar_lista("mt", nomes, malha)
+        lista, sem_malha = modulo.montar_lista("mt", nomes, malha)
 
         self.assertEqual([item["nome"] for item in lista], ["Cuiabá", "Sorriso"])
         self.assertEqual(lista[1]["bbox"], [-56.3, -13.1, -55.2, -12.0])
         self.assertEqual(lista[0]["uf"], "MT")
-        with self.assertRaisesRegex(ValueError, "Malha sem"):
-            modulo.montar_lista("MT", nomes, {"features": malha["features"][:1]})
+        self.assertEqual(sem_malha, [])
+        parcial, sem_malha = modulo.montar_lista("MT", nomes, {"features": malha["features"][:1]})
+        self.assertEqual([item["nome"] for item in parcial], ["Sorriso"])
+        self.assertEqual(sem_malha, [{"codigo_ibge": "5103403", "nome": "Cuiabá", "uf": "MT"}])
+        with self.assertRaisesRegex(ValueError, "não trouxe municípios"):
+            modulo.montar_lista("MT", nomes, {"features": []})
