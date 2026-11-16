@@ -93,7 +93,7 @@ E5; isso não foi testado nesta entrega.
   passo; quatro ações com nomes simples que apenas navegam.
 - **Região** (E2, pronto): pesquisa de município, desenho de retângulo/polígono,
   importação GeoJSON/Shapefile e favoritos sobre `LocalConfigStore`.
-- **Assistente de download** (E3): período → busca → tabela de cenas com data,
+- **Assistente de download** (E3, pronto): período → busca → tabela de cenas com data,
   nuvem e preview → seleção → download com progresso por arquivo, velocidade,
   cancelamento e retomada quando o servidor aceitar `Range`. Bandas e YAML
   ficam em "Opções avançadas".
@@ -150,7 +150,7 @@ Princípios:
 | --- | --- | --- | --- |
 | E1 | **Painel inicial** (feito) | P0 | página "Início" é a primeira; mostra regiões, cenas catalogadas/baixadas, recortes, última análise, modelos com integridade SHA-256, espaço em disco, tarefa atual; avisa `.part` órfão e catálogo ausente; cálculo fora da thread da GUI; não altera arquivos (teste); suíte completa verde |
 | E2 | Região simplificada (feito) | P0 | busca de município offline por lista IBGE embutida; desenho de retângulo; importação GeoJSON (Shapefile opcional com dependência opcional); bbox derivada preserva CRS EPSG:4326; favoritos reutilizam `LocalConfigStore`; testes sem rede |
-| E3 | Assistente de download | P0 | passos 1–7 navegáveis; tabela de cenas a partir de catalogação existente; progresso estruturado `[PROGRESSO] {json}` da CLI (bytes, total, velocidade); cancelar remove `.part`; retomada `Range` testada com servidor fake; limpeza de `.part` órfãos com confirmação |
+| E3 | Assistente de download (feito) | P0 | passos 1–7 navegáveis; tabela de cenas a partir de catalogação existente; progresso estruturado `[PROGRESSO] {json}` da CLI (bytes, total, velocidade); cancelar remove `.part`; retomada `Range` testada com servidor fake; limpeza de `.part` órfãos com confirmação |
 | E4 | Resultados agrícolas | P0 | abas "Talhões (detecção)" e "Culturas (classificação)"; culturas exibem "não determinada" sem modelo aprovado; histórico filtrável; exportação CSV/JSON; nenhum texto menciona hectares |
 | E5 | Datasets do Laboratório | P1 | criar projeto com tipo e esquema de classes versionado; importar patches do catálogo sem copiar GeoTIFF; SHA-256 e detecção de duplicatas; verificação de integridade; filtros por região, data, nuvem e estado de rotulagem |
 | E6 | Rotulagem | P1 | exportar lote para anotador externo; detectar LabelImg/X-AnyLabeling instalados; importar `.txt`; validador YOLO com mensagens por linha; contagem rotulados/pendentes; tela de atribuição de classe para classificação |
@@ -192,3 +192,30 @@ manifesto aprovado. Não é evidência de acurácia nem de validação científi
 Limitações conhecidas: a área usada continua sendo um retângulo; o contorno do
 polígono não é desenhado no mapa nem usado para recortar resultados. Shapefile
 compactado (`.zip`) e KML não são aceitos.
+
+## 7. Entrega E3 — o que mudou
+
+- `http.py`: parcial com nome fixo (`.NOME.part` + `.part.json`), retomada por
+  `Range`/`If-Range`, descarte em HTTP 4xx/5xx, faixa divergente, conteúdo
+  inválido ou servidor sem suporte; callback de progresso; listagem e remoção
+  de parciais legados.
+- `servico.py`/`cli.py`: `--cenas` (seleção por ID) e `--progresso-json`
+  (eventos `cena_encontrada`, `cena`, `arquivo`); downloader injetável.
+- `assistente_download.py`: modelo de cena, filtros, estimativa de espaço com
+  origem declarada e mensagens de progresso em português simples.
+- GUI: página **Baixar imagens** com três passos, prévia/miniatura, progresso,
+  cancelamento e limpeza de temporários antigos com confirmação; Início aponta
+  para o assistente; painel distingue parciais retomáveis de legados.
+
+Critério do roadmap ajustado: cancelar **mantém** o parcial para retomada
+(em vez de removê-lo), porque ele nunca é confundido com um arquivo final.
+Verificação real em 16/11/2026 (uma consulta STAC e uma requisição de 1 byte,
+sem download): o servidor de assets do INPE respondeu `206` com
+`Content-Range` e `ETag` forte para `Range: bytes=0-0`, e os itens de
+`S2-16D-2` trazem `eo:cloud_cover` e o asset `thumbnail`; `file:size` não é
+informado, por isso a estimativa usa a média local. Uma retomada completa
+contra o INPE não foi executada (ela foi testada com servidor simulado), e não
+foi possível confirmar se a miniatura está no mesmo host do STAC porque o STAC
+passou a responder `502` durante a checagem; se estiver em outro host, a GUI
+mostra "sem visualização" em vez de baixá-la.
+A TUI ainda não tem o assistente; ela continua usando as operações anteriores.

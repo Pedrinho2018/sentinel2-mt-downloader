@@ -17,13 +17,13 @@ import re
 import sqlite3
 
 from .configuracao import ConfiguracaoProjeto
+from .http import PARCIAL_LEGADO_RE, SUFIXO_PARCIAL
 
 
 PASTA_MODELOS = Path(__file__).resolve().parent / "analise" / "models"
 STATUS_PATCH_APROVADO = {"APROVADO", "APROVADO_SEM_SCL"}
 SUFIXOS_RASTER = {".tif", ".tiff", ".jp2"}
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-PARCIAL_RE = re.compile(r"^\..+\.part(\.[A-Za-z0-9]+)?$")
 
 
 @dataclass(frozen=True)
@@ -58,6 +58,7 @@ class ResumoPainel:
     patches_aprovados_catalogo: int = 0
     catalogo_patches_existe: bool = False
     downloads_parciais: int = 0
+    parciais_legados: int = 0
     ultima_analise: UltimaAnalise | None = None
     modelos: list[ModeloInstalado] = field(default_factory=list)
     bytes_por_area: dict[str, int] = field(default_factory=dict)
@@ -101,7 +102,11 @@ def coletar_resumo_painel(
     pasta_analises = config.caminho(config.analise.pasta)
 
     resumo.cenas_catalogadas = _contar_cenas_catalogo(config.caminho(config.download.catalogo))
-    resumo.cenas_baixadas, resumo.downloads_parciais = _contar_cenas_baixadas(pasta_download)
+    (
+        resumo.cenas_baixadas,
+        resumo.downloads_parciais,
+        resumo.parciais_legados,
+    ) = _contar_cenas_baixadas(pasta_download)
     resumo.patches_em_disco = _contar_patches_em_disco(pasta_dataset)
     catalogo_patches = config.caminho(config.dataset.catalogo)
     resumo.catalogo_patches_existe = catalogo_patches.is_file()
@@ -187,17 +192,21 @@ def _contar_patches_aprovados(caminho: Path) -> int:
     )
 
 
-def _contar_cenas_baixadas(pasta: Path) -> tuple[int, int]:
-    """Conta pastas `data/cena` com raster final e arquivos `.part` remanescentes."""
+def _contar_cenas_baixadas(pasta: Path) -> tuple[int, int, int]:
+    """Conta cenas com raster final, parciais retomáveis e parciais legados."""
     if not pasta.is_dir():
-        return 0, 0
+        return 0, 0, 0
     cenas: set[Path] = set()
     parciais = 0
+    legados = 0
     for diretorio, subpastas, arquivos in os.walk(pasta, followlinks=False):
         subpastas[:] = [nome for nome in subpastas if not nome.startswith(".")]
         atual = Path(diretorio)
         for nome in arquivos:
-            if PARCIAL_RE.match(nome):
+            if PARCIAL_LEGADO_RE.match(nome):
+                legados += 1
+                continue
+            if nome.startswith(".") and nome.endswith(SUFIXO_PARCIAL):
                 parciais += 1
                 continue
             if nome.startswith(".") or Path(nome).suffix.lower() not in SUFIXOS_RASTER:
@@ -207,7 +216,7 @@ def _contar_cenas_baixadas(pasta: Path) -> tuple[int, int]:
             # (SCL e camadas auxiliares) ainda não têm bandas baixadas.
             if len(relativo) == 2:
                 cenas.add(pasta / relativo[0] / relativo[1])
-    return len(cenas), parciais
+    return len(cenas), parciais, legados
 
 
 def _contar_patches_em_disco(pasta: Path) -> int:
@@ -267,8 +276,13 @@ def _avisos(resumo: ResumoPainel) -> list[str]:
     avisos: list[str] = []
     if resumo.downloads_parciais:
         avisos.append(
-            f"{resumo.downloads_parciais} download(s) interrompido(s) deixaram arquivos "
-            "temporários .part; repita o download da cena para concluí-lo."
+            f"{resumo.downloads_parciais} download(s) interrompido(s) serão retomados "
+            "quando a cena for baixada novamente."
+        )
+    if resumo.parciais_legados:
+        avisos.append(
+            f"{resumo.parciais_legados} arquivo(s) temporário(s) antigo(s) .part não podem "
+            "ser retomados; remova-os em Baixar imagens."
         )
     if resumo.patches_em_disco and not resumo.catalogo_patches_existe:
         avisos.append(

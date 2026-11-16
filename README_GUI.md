@@ -61,6 +61,40 @@ python iniciar_gui.py --setup-only
   parâmetros no SQLite local (sem credenciais). A lista ao lado abre a região
   com clique duplo; as favoritas também aparecem na pesquisa.
 
+## Baixar imagens (assistente)
+
+Fluxo guiado em três passos, sem exigir conhecimento de bandas ou YAML:
+
+1. **Região e período**: confira a região (altere no mapa se precisar) e escolha
+   as datas ou um período rápido (últimos 30/90 dias, safra de verão).
+2. **Escolher cenas**: **Buscar imagens disponíveis** consulta o catálogo do
+   INPE sem baixar nada e lista data, cena, nuvens e tamanho. Filtre por nuvens
+   e oculte as cenas já baixadas; marque as que deseja. A coluna de nuvens vem
+   dos metadados do catálogo quando informada; cenas sem essa informação não
+   são escondidas pelo filtro. A avaliação pela camada SCL continua acontecendo
+   no download e pode descartar a cena. Ao clicar em uma linha, a GUI mostra a
+   prévia local, se existir, ou a miniatura do catálogo (somente do mesmo host
+   do STAC). **Opções avançadas** leva a bandas, filtros e dataset.
+3. **Baixar**: revise a quantidade, as datas, as bandas e a estimativa de
+   espaço. A estimativa usa o tamanho informado pelo catálogo ou, na falta dele,
+   a média das cenas já baixadas, e diz qual foi a fonte. Durante o download há
+   progresso geral e por arquivo, velocidade e mensagens simples.
+
+**Cancelar e retomar.** Cada arquivo é recebido em `.NOME.part`, ao lado do
+destino, com um pequeno `.NOME.part.json` de controle. Ao cancelar, ou se a
+conexão cair, o parcial é mantido; o próximo download do mesmo arquivo pede ao
+servidor apenas o restante (`Range` com `If-Range`). Se o servidor não aceitar
+retomada ou o arquivo remoto tiver mudado, o download recomeça do zero, sem
+misturar bytes. O arquivo final só aparece depois da conferência de tamanho e
+da leitura do GeoTIFF. Temporários antigos com nome aleatório, de versões
+anteriores, não podem ser retomados; o passo 3 oferece removê-los, com
+confirmação e sem tocar em imagens completas.
+
+O assistente executa a mesma CLI: a busca usa a catalogação com
+`--progresso-json`, e o download usa `--baixar --cenas ID1,ID2 --max-itens 0
+--progresso-json`. As linhas `[PROGRESSO] {json}` alimentam a tela e não
+aparecem no registro de Operações.
+
 ## Página Início
 
 É a primeira tela. Os botões **Selecionar região**, **Buscar imagens**,

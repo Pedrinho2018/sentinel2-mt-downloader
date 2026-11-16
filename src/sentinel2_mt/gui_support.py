@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
+
+
+ID_CENA_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,199}")
 
 
 def normalizar_bbox(bbox: list[float]) -> list[float]:
@@ -41,6 +45,8 @@ def montar_argumentos_operacao(
     tamanho_lote: int | None = None,
     patch_size: int | None = None,
     patch_stride: int | None = None,
+    cenas: list[str] | tuple[str, ...] | None = None,
+    progresso_json: bool = False,
 ) -> list[str]:
     """Traduz o formulário da GUI para argumentos da CLI oficial."""
     if operacao not in {"catalogar", "baixar", "dataset", "analisar", "sincronizar"}:
@@ -73,6 +79,13 @@ def montar_argumentos_operacao(
             if patch_stride <= 0:
                 raise ValueError("O stride do patch deve ser positivo.")
             argumentos.extend(["--patch-stride", str(patch_stride)])
+        if cenas:
+            invalidas = [cena for cena in cenas if not ID_CENA_RE.fullmatch(str(cena))]
+            if invalidas:
+                raise ValueError(f"Identificador de cena inválido: {invalidas[0]}")
+            argumentos.extend(["--cenas", ",".join(str(cena) for cena in cenas)])
+        if progresso_json:
+            argumentos.append("--progresso-json")
     else:
         if oauth_json and not oauth_json.startswith("${"):
             oauth = Path(oauth_json).expanduser()

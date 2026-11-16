@@ -96,6 +96,8 @@ class TestPainel(TestCase):
         # Cena com apenas camadas de qualidade não conta como baixada.
         self._escrever("data/sentinel2/2026-01-01/B/qualidade/SCL.tif", b"12")
         self._escrever("data/sentinel2/2026-01-01/C/.B03.tif.abc123.part.tif", b"123")
+        self._escrever("data/sentinel2/2026-01-01/C/.B04.tif.part", b"1")
+        self._escrever("data/sentinel2/2026-01-01/C/.B04.tif.part.json", b"{}")
         self._escrever("data/dataset/2026-01-01/A/P1/multiband.tif", b"55555")
         self._escrever("data/dataset/2026-01-01/A/P2/metadata.json", b"{}")
 
@@ -105,12 +107,14 @@ class TestPainel(TestCase):
         self.assertEqual(resumo.cenas_catalogadas, 3)
         self.assertEqual(resumo.cenas_baixadas, 1)
         self.assertEqual(resumo.downloads_parciais, 1)
+        self.assertEqual(resumo.parciais_legados, 1)
         self.assertEqual(resumo.patches_em_disco, 2)
         self.assertFalse(resumo.catalogo_patches_existe)
-        self.assertEqual(resumo.bytes_por_area["imagens"], 4 + 2 + 2 + 3)
+        self.assertEqual(resumo.bytes_por_area["imagens"], 4 + 2 + 2 + 3 + 1 + 2)
         self.assertEqual(resumo.bytes_por_area["dataset"], 5 + 2)
         avisos = " ".join(resumo.avisos)
-        self.assertIn(".part", avisos)
+        self.assertIn("serão retomados", avisos)
+        self.assertIn("não podem ser retomados", avisos)
         self.assertIn("catálogo de patches não foi encontrado", avisos)
         self.assertIn("Gere o dataset", resumo.proxima_acao)
 
