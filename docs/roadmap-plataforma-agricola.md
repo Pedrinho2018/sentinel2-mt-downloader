@@ -209,13 +209,22 @@ compactado (`.zip`) e KML não são aceitos.
 
 Critério do roadmap ajustado: cancelar **mantém** o parcial para retomada
 (em vez de removê-lo), porque ele nunca é confundido com um arquivo final.
-Verificação real em 16/11/2026 (uma consulta STAC e uma requisição de 1 byte,
-sem download): o servidor de assets do INPE respondeu `206` com
-`Content-Range` e `ETag` forte para `Range: bytes=0-0`, e os itens de
-`S2-16D-2` trazem `eo:cloud_cover` e o asset `thumbnail`; `file:size` não é
-informado, por isso a estimativa usa a média local. Uma retomada completa
-contra o INPE não foi executada (ela foi testada com servidor simulado), e não
-foi possível confirmar se a miniatura está no mesmo host do STAC porque o STAC
-passou a responder `502` durante a checagem; se estiver em outro host, a GUI
-mostra "sem visualização" em vez de baixá-la.
+Validação real em 16/11/2026 (cena `S2-16D_V2_020018_20260322`, bandas B02,
+B03, B04 e SCL, área de teste perto de Sorriso, pasta `data/validacao-e3/`):
+
+| Etapa | Resultado |
+| --- | --- |
+| Busca com `--progresso-json` | 12 cenas; `eo:cloud_cover` presente; miniaturas em `data.inpe.br`, mesmo host do STAC; `file:size` ausente |
+| 1ª execução, SIGTERM em B02 (como o Cancelar da GUI) | parado em 56,6 de 177,6 MB; `.B02.tif.part` e `.part.json` mantidos; nenhum `B02.tif` final |
+| 2ª execução | `B02: retomado` a partir de 56,6 MB; B03/B04 baixados; código de saída 0 |
+| Integridade | tamanhos idênticos ao `Content-Range`; 10560×10560, `int16`, EPSG:10857, 10 m, nodata 0; estatísticas do B02 retomado iguais às de um download sem interrupção; nenhum temporário restante |
+
+A validação expôs duas falhas, corrigidas nesta entrega: o STAC do INPE
+responde `502` de forma intermitente e o cliente não repetia a consulta; e o
+download por `--cenas` continuava paginando o STAC depois de encontrar todas as
+cenas, de modo que um `502` tardio fazia a execução terminar com erro e sem
+gravar o catálogo. Agora consultas STAC repetem `429/502/503/504` com espera
+crescente (`politica_retentativa_stac`) e a paginação para assim que todas as
+cenas escolhidas foram processadas.
+
 A TUI ainda não tem o assistente; ela continua usando as operações anteriores.

@@ -8,6 +8,8 @@ import re
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
 from pystac_client import Client
+from pystac_client.stac_api_io import StacApiIO
+from urllib3.util.retry import Retry
 
 from .assets import ResolvedorAssets
 from .catalogo import RepositorioCatalogoCSV, RepositorioCatalogoPatchesCSV
@@ -17,6 +19,29 @@ from .http import ClienteDownloadHTTP, ProgressoDownload
 from .imagens import ProcessadorImagem
 from .modelos import RegistroCatalogo, ResumoDataset, ResumoExecucao
 from .patches import GeradorDataset
+
+
+STATUS_STAC_TRANSITORIOS = (429, 502, 503, 504)
+
+
+def politica_retentativa_stac() -> Retry:
+    """Repete consultas STAC em falhas transitórias do servidor (ex.: 502 do nginx).
+
+    Buscas STAC são somente leitura, então repetir GET/POST é seguro. Com
+    `backoff_factor=2`, as esperas crescem até cerca de 30 s no total.
+    """
+    return Retry(
+        total=5,
+        backoff_factor=2,
+        status_forcelist=STATUS_STAC_TRANSITORIOS,
+        allowed_methods=None,
+        raise_on_status=False,
+        respect_retry_after_header=True,
+    )
+
+
+def abrir_cliente_stac(url: str) -> Client:
+    return Client.open(url, stac_io=StacApiIO(max_retries=politica_retentativa_stac()))
 
 
 @dataclass(frozen=True)
@@ -39,7 +64,7 @@ class ServicoSentinel2:
         catalogo: RepositorioCatalogoCSV | None = None,
         processador: ProcessadorImagem | None = None,
         catalogo_patches: RepositorioCatalogoPatchesCSV | None = None,
-        cliente_stac_factory: Callable[[str], object] = Client.open,
+        cliente_stac_factory: Callable[[str], object] = abrir_cliente_stac,
         saida: Callable[[str], None] = print,
         eventos: Callable[[dict], None] | None = None,
         downloader_factory: Callable[..., ClienteDownloadHTTP] = ClienteDownloadHTTP,
@@ -100,6 +125,9 @@ class ServicoSentinel2:
 
         for item in busca.items():
             if selecionadas:
+                if encontradas == selecionadas:
+                    # Todas as cenas escolhidas já foram processadas: não pagina o STAC à toa.
+                    break
                 if item.id not in selecionadas or item.id in encontradas:
                     continue
                 encontradas.add(item.id)

@@ -206,3 +206,36 @@ class TestCliProgresso(TestCase):
         self.assertEqual(codigo, 0)
         self.assertEqual(capturado["opcoes"].cenas, ("A", "B"))
         self.assertIs(capturado["eventos"], emitir_progresso_json)
+
+
+class TestRobustezStac(TestCase):
+    def test_politica_repete_erros_transitorios_do_servidor(self) -> None:
+        from sentinel2_mt.servico import politica_retentativa_stac
+
+        politica = politica_retentativa_stac()
+        self.assertEqual(politica.total, 5)
+        self.assertTrue({502, 503, 504}.issubset(set(politica.status_forcelist)))
+        self.assertIsNone(politica.allowed_methods)  # busca STAC pode usar POST
+        self.assertFalse(politica.raise_on_status)
+
+    def test_para_de_paginar_quando_todas_as_cenas_foram_encontradas(self) -> None:
+        consumidos: list[str] = []
+
+        class BuscaQueFalha:
+            def items(self):
+                for nome in ("A", "B"):
+                    consumidos.append(nome)
+                    yield item(nome)
+                raise AssertionError("não deveria pedir a próxima página")
+
+        caso = TestSelecaoCenas("test_download_restrito_as_cenas_selecionadas")
+        caso.setUp()
+        try:
+            servico = caso._servico([])
+            servico.cliente_stac_factory = lambda _: SimpleNamespace(search=lambda **_: BuscaQueFalha())
+            resumo = servico.executar(OpcoesColeta(baixar_arquivos=True, max_itens=0, cenas=("A",)))
+        finally:
+            caso.tearDown()
+
+        self.assertEqual(resumo.aprovadas, 1)
+        self.assertEqual(consumidos, ["A", "B"])
