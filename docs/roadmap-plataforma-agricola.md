@@ -299,7 +299,13 @@ Decisões:
   PyQt5, que conflitaria com PySide6 na mesma `.venv`. A integração é por
   contrato de arquivos YOLO e funciona com qualquer anotador.
 
-Não verificado: abertura real do LabelImg ou do X-AnyLabeling (nenhum está
+Verificado depois (16/11/2026): o LabelImg 1.8.6 instalado com `pipx` em
+Python 3.14 não abre (`ModuleNotFoundError: distutils`), e o código contém as
+chamadas `drawRect`/`drawLine` com floats que falham no Python 3.10+. Ele foi
+desinstalado; a recomendação passa a ser um anotador mantido (X-AnyLabeling) ou
+LabelImg em Python 3.9. A importação YOLO da aplicação não depende da ferramenta.
+
+Não verificado: abertura real do X-AnyLabeling (nenhum está
 instalado nesta máquina; o lançamento foi testado com executável simulado).
 O argumento de linha de comando do LabelImg (`imagens classes.txt saída`) segue
 a documentação do projeto; a escolha do formato YOLO continua manual na

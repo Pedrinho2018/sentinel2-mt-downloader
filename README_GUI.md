@@ -140,11 +140,17 @@ YOLO `.txt`; o código da ferramenta não é alterado.
    integridade ficam fora. Os arquivos do pipeline nunca são entregues ao
    anotador.
 2. **Abrir no anotador**: abre o LabelImg ou o X-AnyLabeling, se algum estiver
-   no `PATH`. No LabelImg, confirme o formato **YOLO** antes de salvar. Nenhum
-   anotador é instalado pela aplicação. O LabelImg está sem manutenção (última
-   versão 1.8.6) e depende de PyQt5; instale-o fora da `.venv` da aplicação,
-   por exemplo com `pipx install labelImg`. **Abrir pasta do lote** funciona com
-   qualquer ferramenta.
+   no `PATH`. Nenhum anotador é instalado pela aplicação. **Abrir pasta do
+   lote** funciona com qualquer ferramenta que grave YOLO `.txt`.
+
+   **LabelImg não funciona em Python 3.12 ou mais novo.** Testado em 16/11/2026
+   com `pipx install labelImg` (versão 1.8.6, a última publicada) em Python
+   3.14: ele não abre, porque importa `distutils`, removido no Python 3.12. O
+   código instalado também chama `drawRect`/`drawLine` com coordenadas
+   fracionárias, o erro conhecido que derruba o programa ao desenhar caixas no
+   Python 3.10+. Como a regra do projeto é não alterar o código do LabelImg, use
+   um anotador mantido que exporte YOLO, como o X-AnyLabeling, ou o LabelImg
+   num ambiente com Python 3.9.
 3. **Importar anotações**: valida cada `.txt` (5 valores por linha, ID dentro
    do esquema, coordenadas normalizadas, caixa dentro da imagem, sem
    duplicatas) e grava no banco. Arquivos válidos marcam a imagem como
