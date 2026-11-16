@@ -78,6 +78,8 @@ analise:
   historico: data/historico-analises.sqlite3
   gerar_relatorio: true
   max_imagens: 1000
+laboratorio:
+  pasta: data/laboratorio
 sincronizacao:
   pasta_remota: sentinel2-mt
   oauth_json: ${GOOGLE_OAUTH_JSON:-}

@@ -104,6 +104,9 @@ class GeradorConfiguracao:
                 "gerar_relatorio": bool(dados.get("gerar_relatorio", True)),
                 "max_imagens": int(dados.get("max_imagens_analise", 1000)),
             },
+            "laboratorio": {
+                "pasta": dados.get("pasta_laboratorio", "data/laboratorio"),
+            },
             "sincronizacao": {
                 "pasta_remota": dados.get("pasta_remota", "sentinel2-mt"),
                 "oauth_json": dados.get("oauth_json", "${GOOGLE_OAUTH_JSON:-}"),

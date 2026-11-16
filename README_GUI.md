@@ -95,6 +95,42 @@ O assistente executa a mesma CLI: a busca usa a catalogação com
 --progresso-json`. As linhas `[PROGRESSO] {json}` alimentam a tela e não
 aparecem no registro de Operações.
 
+## Laboratório de IA
+
+Área separada do modo usuário para organizar datasets de treinamento. Nesta
+versão ela cobre projetos, classes e imagens; rotulagem, treino e avaliação
+virão nas próximas entregas (veja `docs/roadmap-plataforma-agricola.md`).
+
+- **Projetos**: cada projeto tem um tipo fixo. *Detecção (caixas)* usa
+  anotações YOLO com caixas, com a classe padrão `talhao`. *Classificação*
+  usa uma classe por imagem, sem caixas, com as classes padrão `soja`,
+  `milho`, `algodao` e `outras`. O tipo não muda depois de criado, para que
+  anotações de detecção e rótulos de classificação não se misturem.
+- **Classes versionadas**: **Editar classes…** cria a próxima versão do
+  esquema; as anteriores continuam registradas. Nomes de classe usam letras
+  minúsculas sem acento, números e `_`.
+- **Importar recortes do sistema**: adiciona os PNG RGB aprovados do
+  `catalogo/patches.csv`. Sem o catálogo, a importação lê os `metadata.json` da
+  pasta do dataset. Os arquivos ficam onde estão: nada é copiado e os GeoTIFFs
+  científicos não são alterados. A importação é idempotente.
+- **Importar imagens externas…**: PNG/JPEG validados (formato, tamanho até
+  100 MB e leitura) são copiados para `laboratorio.pasta/externas/` com nome
+  derivado do SHA-256; o original não é alterado.
+- **Duplicatas**: imagens com o mesmo SHA-256 são marcadas como duplicata da
+  primeira.
+- **Verificar integridade**: recalcula o SHA-256, confere a leitura do PNG e do
+  GeoTIFF multibanda e marca a imagem como íntegra, ausente, alterada ou
+  ilegível.
+- **Filtros**: texto (região, cena, grade BDC ou data), safra (setembro a
+  agosto, ex.: `2025/2026`), nuvens, estado de rotulagem, só duplicatas e só
+  com problema. A grade mostra miniaturas em cache.
+
+Banco, miniaturas e cópias externas ficam em `laboratorio.pasta` (padrão
+`data/laboratorio`; nos pacotes Linux, `~/.local/share/sentinel2-mt/laboratorio`).
+O banco tem permissão restrita e guarda somente metadados, hashes e caminhos.
+A pasta precisa ficar dentro da raiz da aplicação; links simbólicos e escapes
+são recusados.
+
 ## Página Início
 
 É a primeira tela. Os botões **Selecionar região**, **Buscar imagens**,

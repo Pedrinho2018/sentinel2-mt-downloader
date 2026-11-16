@@ -65,6 +65,9 @@ analise:
   gerar_relatorio: true
   max_imagens: 1000
 
+laboratorio:
+  pasta: "${HOME}/.local/share/sentinel2-mt/laboratorio"
+
 sincronizacao:
   pasta_remota: "${PASTA_REMOTA:-sentinel2-mt}"
   oauth_json: "${GOOGLE_OAUTH_JSON:-}"
