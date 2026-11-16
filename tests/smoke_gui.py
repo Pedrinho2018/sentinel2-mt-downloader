@@ -8,7 +8,7 @@ from PySide6 import QtCore, QtWidgets
 from gerar_config_gui import MainWindow
 
 
-CAPTURAS = [Path(f"/tmp/sentinel2-mt-gui-{indice}.png") for indice in range(5)]
+CAPTURAS = [Path(f"/tmp/sentinel2-mt-gui-{indice}.png") for indice in range(6)]
 CAPTURA_EXECUTANDO = Path("/tmp/sentinel2-mt-gui-executando.png")
 CAPTURA_SINCRONIZACAO = Path("/tmp/sentinel2-mt-gui-sincronizacao.png")
 
@@ -25,7 +25,7 @@ def main() -> int:
         if not janela.grab().save(str(CAPTURAS[indice])):
             app.exit(2)
             return
-        if indice == 1:
+        if indice == janela._indice_pagina("Área e período"):
             imagem = janela.mapa.grab().toImage()
             cores = {
                 imagem.pixelColor(x, y).rgba()
@@ -39,7 +39,7 @@ def main() -> int:
         if indice < len(CAPTURAS):
             QtCore.QTimer.singleShot(500, capturar)
         else:
-            janela._navegar(0)
+            janela._navegar(janela._indice_pagina("Operações"))
             janela._definir_execucao(True, "Executando")
             app.processEvents()
             if not janela.grab().save(str(CAPTURA_EXECUTANDO)):
@@ -67,7 +67,7 @@ def main() -> int:
     def capturar() -> None:
         janela._navegar(indice)
         app.processEvents()
-        if indice == 1:
+        if indice == janela._indice_pagina("Área e período"):
             aguardar_mapa()
         else:
             salvar_e_avancar()

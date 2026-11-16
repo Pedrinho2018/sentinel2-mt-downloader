@@ -21,6 +21,7 @@ from sentinel2_mt.gui_support import (
     normalizar_bbox,
 )
 from sentinel2_mt.gui_theme import CORES, folha_estilos
+from sentinel2_mt.painel import ResumoPainel, coletar_resumo_painel, formatar_bytes
 
 
 EMPACOTADO = bool(getattr(sys, "frozen", False))
@@ -477,6 +478,12 @@ class MapaWidget(QWebEngineView):
         """
 
 
+class _PontePainel(QtCore.QObject):
+    """Entrega o resumo calculado em segundo plano à thread da interface."""
+
+    concluido = QtCore.Signal(object)
+
+
 class MainWindow(QtWidgets.QMainWindow):
     DESCRICOES_BANDAS = {
         "B02": "Azul; destaca água e auxilia na composição RGB.",
@@ -494,7 +501,8 @@ class MainWindow(QtWidgets.QMainWindow):
     }
     COLECOES_DISPONIVEIS = ("S2-16D-2", "S2_L2A-1")
     PAGINAS = (
-        ("Visão geral", "Execute e acompanhe as operações"),
+        ("Início", "Resumo do seu trabalho e próximo passo recomendado"),
+        ("Operações", "Execute e acompanhe as operações"),
         ("Área e período", "Escolha a região no mapa"),
         ("Dados e qualidade", "Ajuste STAC, bandas e filtros"),
         ("Google Drive", "Configure OAuth e sincronização"),
@@ -523,6 +531,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._ultimo_resultado: dict[str, Any] | None = None
         self._operacao_em_execucao = ""
         self._resultado_pendente: Path | None = None
+        self._pool_painel = QtCore.QThreadPool(self)
+        self._pool_painel.setMaxThreadCount(1)
+        self._painel_em_coleta = False
+        self._ponte_painel = _PontePainel(self)
+        self._ponte_painel.concluido.connect(self._aplicar_resumo_painel)
 
         self._criar_campos()
         self._montar_janela()
@@ -530,6 +543,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._atualizar_preview_yaml()
         self._recarregar_perfis()
         self._atualizar_operacao()
+        QtCore.QTimer.singleShot(0, self._atualizar_painel)
+
+    def _indice_pagina(self, titulo: str) -> int:
+        """Localiza páginas pelo título para não depender da ordem da navegação."""
+        for indice, (nome, _) in enumerate(self.PAGINAS):
+            if nome == titulo:
+                return indice
+        raise KeyError(titulo)
 
     def _criar_campos(self) -> None:
         self.nome_regiao = QtWidgets.QLineEdit("Mato Grosso")
@@ -703,6 +724,7 @@ class MainWindow(QtWidgets.QMainWindow):
         layout_area.addLayout(self._criar_cabecalho())
 
         self.stack = QtWidgets.QStackedWidget()
+        self.stack.addWidget(self._pagina_inicio())
         self.stack.addWidget(self._pagina_visao_geral())
         self.stack.addWidget(self._pagina_area())
         self.stack.addWidget(self._pagina_dados())
@@ -774,6 +796,215 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status.setObjectName("statusChip")
         layout.addWidget(self.status)
         return layout
+
+    INDICADORES_PAINEL = (
+        ("regioes", "Regiões salvas"),
+        ("cenas_catalogadas", "Imagens encontradas"),
+        ("cenas_baixadas", "Imagens baixadas"),
+        ("patches", "Recortes prontos para análise"),
+        ("ultima_analise", "Última análise"),
+        ("modelos", "Modelos instalados"),
+        ("disco", "Espaço ocupado"),
+        ("tarefa", "Tarefa atual"),
+    )
+
+    def _pagina_inicio(self) -> QtWidgets.QWidget:
+        pagina = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(pagina)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+
+        acoes = Cartao(
+            "O que você quer fazer?",
+            "Escolha uma etapa. Nada é baixado ou analisado sem você confirmar na tela seguinte.",
+        )
+        linha_acoes = QtWidgets.QHBoxLayout()
+        self.btn_inicio_regiao = botao("Selecionar região", "primaryButton")
+        self.btn_inicio_buscar = botao("Buscar imagens")
+        self.btn_inicio_analisar = botao("Analisar região")
+        self.btn_inicio_resultados = botao("Consultar resultados")
+        self.btn_inicio_regiao.clicked.connect(
+            lambda: self._navegar(self._indice_pagina("Área e período"))
+        )
+        self.btn_inicio_buscar.clicked.connect(lambda: self._preparar_operacao("catalogar"))
+        self.btn_inicio_analisar.clicked.connect(lambda: self._preparar_operacao("analisar"))
+        self.btn_inicio_resultados.clicked.connect(
+            lambda: self._navegar(self._indice_pagina("Análise da região"))
+        )
+        for item in (
+            self.btn_inicio_regiao,
+            self.btn_inicio_buscar,
+            self.btn_inicio_analisar,
+            self.btn_inicio_resultados,
+        ):
+            item.setMinimumHeight(44)
+            linha_acoes.addWidget(item)
+        acoes.layout_principal.addLayout(linha_acoes)
+        layout.addWidget(acoes)
+
+        indicadores = QtWidgets.QGridLayout()
+        indicadores.setHorizontalSpacing(14)
+        indicadores.setVerticalSpacing(14)
+        self.painel_valores: dict[str, QtWidgets.QLabel] = {}
+        self.painel_detalhes: dict[str, QtWidgets.QLabel] = {}
+        for posicao, (chave, titulo) in enumerate(self.INDICADORES_PAINEL):
+            cartao = Cartao(titulo)
+            valor = QtWidgets.QLabel("…")
+            valor.setObjectName("statValue")
+            valor.setAccessibleName(titulo)
+            detalhe = QtWidgets.QLabel("")
+            detalhe.setObjectName("cardHelp")
+            detalhe.setWordWrap(True)
+            cartao.layout_principal.addWidget(valor)
+            cartao.layout_principal.addWidget(detalhe)
+            cartao.layout_principal.addStretch()
+            self.painel_valores[chave] = valor
+            self.painel_detalhes[chave] = detalhe
+            indicadores.addWidget(cartao, posicao // 4, posicao % 4)
+        layout.addLayout(indicadores)
+
+        orientacao = Cartao("Próximo passo recomendado")
+        self.painel_proxima_acao = QtWidgets.QLabel("Calculando o resumo local…")
+        self.painel_proxima_acao.setWordWrap(True)
+        self.painel_avisos = QtWidgets.QLabel("")
+        self.painel_avisos.setObjectName("cardHelp")
+        self.painel_avisos.setWordWrap(True)
+        self.btn_atualizar_painel = botao("Atualizar resumo")
+        self.btn_atualizar_painel.clicked.connect(self._atualizar_painel)
+        orientacao.layout_principal.addWidget(self.painel_proxima_acao)
+        orientacao.layout_principal.addWidget(self.painel_avisos)
+        orientacao.layout_principal.addWidget(
+            self.btn_atualizar_painel, 0, QtCore.Qt.AlignmentFlag.AlignLeft
+        )
+        layout.addWidget(orientacao)
+        layout.addStretch()
+        return pagina
+
+    def _preparar_operacao(self, operacao: str) -> None:
+        """Seleciona a operação e leva o usuário à tela onde ele confirma a execução."""
+        indice = self.operacao.findData(operacao)
+        if indice >= 0:
+            self.operacao.setCurrentIndex(indice)
+        self._navegar(self._indice_pagina("Operações"))
+
+    def _config_painel(self) -> ConfiguracaoProjeto | None:
+        # Usa somente o arquivo escolhido na GUI, sem recorrer a outro YAML.
+        caminho = Path(self.output_path.text().strip() or DEFAULT_CONFIG).expanduser()
+        if not caminho.is_file():
+            return None
+        return ConfiguracaoProjeto.carregar(caminho, raiz=ROOT)
+
+    def _atualizar_painel(self, sincrono: bool = False) -> None:
+        """Recalcula o resumo em segundo plano para não bloquear a interface."""
+        if self._painel_em_coleta:
+            return
+        try:
+            config = self._config_painel()
+            regioes = len(self.store.listar())
+        except (OSError, TypeError, ValueError, KeyError, yaml.YAMLError) as erro:
+            self.painel_proxima_acao.setText(f"Não foi possível ler a configuração: {erro}")
+            return
+        if config is None:
+            self.painel_proxima_acao.setText(
+                "Nenhuma configuração encontrada. Selecione uma região e salve a configuração."
+            )
+            return
+        self._painel_em_coleta = True
+        self.btn_atualizar_painel.setEnabled(False)
+        ponte = self._ponte_painel
+
+        def coletar() -> None:
+            try:
+                resultado: object = coletar_resumo_painel(config, regioes_salvas=regioes)
+            except Exception as erro:  # o painel nunca deve derrubar a GUI
+                resultado = erro
+            ponte.concluido.emit(resultado)
+
+        if sincrono:
+            coletar()
+        else:
+            self._pool_painel.start(coletar)
+
+    def _aplicar_resumo_painel(self, resultado: object) -> None:
+        self._painel_em_coleta = False
+        self.btn_atualizar_painel.setEnabled(True)
+        if not isinstance(resultado, ResumoPainel):
+            self.painel_proxima_acao.setText(f"Não foi possível calcular o resumo: {resultado}")
+            return
+        self._ultimo_resumo_painel = resultado
+        valores = self.painel_valores
+        detalhes = self.painel_detalhes
+        valores["regioes"].setText(str(resultado.regioes_salvas))
+        detalhes["regioes"].setText("Perfis locais de área e período.")
+        valores["cenas_catalogadas"].setText(str(resultado.cenas_catalogadas))
+        detalhes["cenas_catalogadas"].setText("Cenas registradas no catálogo de busca.")
+        valores["cenas_baixadas"].setText(str(resultado.cenas_baixadas))
+        detalhes["cenas_baixadas"].setText(
+            f"{resultado.downloads_parciais} download(s) incompleto(s)."
+            if resultado.downloads_parciais
+            else "Cenas com bandas salvas no computador."
+        )
+        valores["patches"].setText(str(resultado.patches_aprovados_catalogo))
+        detalhes["patches"].setText(
+            f"{resultado.patches_em_disco} recorte(s) no disco; "
+            + (
+                "catálogo encontrado."
+                if resultado.catalogo_patches_existe
+                else "catálogo de recortes ausente."
+            )
+        )
+        ultima = resultado.ultima_analise
+        if ultima is None:
+            valores["ultima_analise"].setText("Nenhuma")
+            detalhes["ultima_analise"].setText("Ainda não há análises no histórico local.")
+        else:
+            valores["ultima_analise"].setText(ultima.criado_em[:10] or "—")
+            detalhes["ultima_analise"].setText(
+                f"{ultima.regiao or 'Região sem nome'} • {ultima.total_deteccoes} detecção(ões)"
+                f" • modelo {ultima.modelo_versao or 'não informado'}"
+            )
+        conferidos = sum(1 for modelo in resultado.modelos if modelo.integridade_conferida)
+        valores["modelos"].setText(str(len(resultado.modelos)))
+        ativo = next((modelo for modelo in resultado.modelos if modelo.ativo), None)
+        if ativo is None:
+            detalhes["modelos"].setText("Nenhum modelo ativo encontrado.")
+        else:
+            tarefa = {"detection": "detecção de talhões", "classify": "classificação"}.get(
+                ativo.tarefa, ativo.tarefa or "tarefa não informada"
+            )
+            integridade = {
+                "conferida": "integridade SHA-256 conferida",
+                "divergente": "SHA-256 DIVERGENTE do manifesto",
+                "sem_manifesto": "sem manifesto SHA-256",
+            }[ativo.integridade]
+            detalhes["modelos"].setText(
+                f"Ativo: {ativo.versao or ativo.arquivo} ({tarefa}); {integridade}. "
+                f"{conferidos} com integridade conferida. Integridade não equivale a "
+                "validação científica."
+            )
+        valores["disco"].setText(formatar_bytes(resultado.bytes_total))
+        partes = resultado.bytes_por_area
+        detalhes["disco"].setText(
+            f"Imagens {formatar_bytes(partes.get('imagens', 0))} • "
+            f"recortes {formatar_bytes(partes.get('dataset', 0))} • "
+            f"análises {formatar_bytes(partes.get('analises', 0))}"
+        )
+        self._atualizar_tarefa_painel()
+        self.painel_proxima_acao.setText(resultado.proxima_acao)
+        self.painel_avisos.setText(
+            "\n".join(f"⚠ {aviso}" for aviso in resultado.avisos)
+            if resultado.avisos
+            else "Nenhum problema encontrado nos arquivos locais."
+        )
+
+    def _atualizar_tarefa_painel(self) -> None:
+        if not hasattr(self, "painel_valores"):
+            return
+        executando = self.processo.state() != QtCore.QProcess.ProcessState.NotRunning
+        self.painel_valores["tarefa"].setText("Em andamento" if executando else "Nenhuma")
+        self.painel_detalhes["tarefa"].setText(
+            self.operacao.currentText() if executando else f"Último estado: {self.status.text()}"
+        )
 
     def _pagina_visao_geral(self) -> QtWidgets.QWidget:
         pagina = QtWidgets.QWidget()
@@ -1078,7 +1309,7 @@ class MainWindow(QtWidgets.QMainWindow):
         texto_inicio = QtWidgets.QLabel(
             "• Em Área e período, segure Shift e arraste no mapa para desenhar a região.\n"
             "• Em Dados e qualidade, marque as bandas e revise o filtro de nuvens.\n"
-            "• Em Visão geral, escolha a operação e clique em Executar operação.\n"
+            "• Em Início, veja o próximo passo; em Operações, escolha a operação e clique em Executar operação.\n"
             "• Acompanhe mensagens e arquivos na Saída da operação."
         )
         texto_inicio.setWordWrap(True)
@@ -1139,11 +1370,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stack.setCurrentIndex(indice)
         self.titulo_pagina.setText(self.PAGINAS[indice][0])
         self.subtitulo_pagina.setText(self.PAGINAS[indice][1])
-        if indice == 1:
+        titulo = self.PAGINAS[indice][0]
+        if titulo == "Área e período":
             QtCore.QTimer.singleShot(0, self.mapa.reativar)
             QtCore.QTimer.singleShot(200, self.mapa.reativar)
-        elif indice == 5:
+        elif titulo == "Histórico":
             self._recarregar_historico()
+        elif titulo == "Início":
+            self._atualizar_painel()
 
     def _atualizar_operacao(self) -> None:
         operacao = self.operacao.currentData()
@@ -1316,6 +1550,7 @@ class MainWindow(QtWidgets.QMainWindow):
         mensagem = "Concluído" if codigo == 0 else f"Encerrado com código {codigo}"
         self.log.appendPlainText(f"\n[{mensagem}]")
         self._definir_execucao(False, mensagem)
+        self._atualizar_painel()
 
     def _processar_linha_resultado(self, linha: str) -> None:
         marcador = "[ANALISE_RESULTADO] "
@@ -1367,7 +1602,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.btn_relatorio.setEnabled(bool(relatorio and relatorio.is_file()))
         self.btn_salvar_relatorio.setEnabled(bool(relatorio and relatorio.is_file()))
-        self._navegar(4)
+        self._navegar(self._indice_pagina("Análise da região"))
         self._recarregar_historico()
 
     @staticmethod
@@ -1526,6 +1761,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not executando:
             self.progresso.setValue(0)
         self.status.setText(mensagem)
+        self._atualizar_tarefa_painel()
 
     def _cancelar(self) -> None:
         if self.processo.state() == QtCore.QProcess.ProcessState.NotRunning:
@@ -1695,6 +1931,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
             self.processo.kill()
             self.processo.waitForFinished(1500)
+        self._pool_painel.waitForDone(5000)
         evento.accept()
 
 

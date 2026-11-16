@@ -96,6 +96,73 @@ class TestGuiQt(TestCase):
         textos = [label.text() for label in self.janela.stack.currentWidget().findChildren(QtWidgets.QLabel)]
         self.assertIn("Problemas comuns", textos)
 
+    def test_inicio_e_a_pagina_inicial_com_acoes_simples(self) -> None:
+        self.assertEqual(self.janela.PAGINAS[0][0], "Início")
+        self.assertEqual(self.janela.stack.currentIndex(), 0)
+        textos = {
+            self.janela.btn_inicio_regiao.text(),
+            self.janela.btn_inicio_buscar.text(),
+            self.janela.btn_inicio_analisar.text(),
+            self.janela.btn_inicio_resultados.text(),
+        }
+        self.assertEqual(
+            textos,
+            {"Selecionar região", "Buscar imagens", "Analisar região", "Consultar resultados"},
+        )
+
+    def test_painel_sem_configuracao_nao_le_outro_yaml(self) -> None:
+        self.janela._pool_painel.waitForDone(5000)
+        self.app.processEvents()
+        self.assertFalse(Path(self.janela.output_path.text()).exists())
+
+        self.janela._atualizar_painel(sincrono=True)
+
+        self.assertIn("Nenhuma configuração", self.janela.painel_proxima_acao.text())
+        self.assertEqual(self.janela.painel_valores["disco"].text(), "…")
+
+    def test_acoes_do_inicio_navegam_sem_executar(self) -> None:
+        self.janela.btn_inicio_regiao.click()
+        self.assertEqual(self.janela.titulo_pagina.text(), "Área e período")
+
+        self.janela.btn_inicio_buscar.click()
+        self.assertEqual(self.janela.titulo_pagina.text(), "Operações")
+        self.assertEqual(self.janela.operacao.currentData(), "catalogar")
+
+        self.janela.btn_inicio_analisar.click()
+        self.assertEqual(self.janela.operacao.currentData(), "analisar")
+        self.assertEqual(
+            self.janela.processo.state(), QtCore.QProcess.ProcessState.NotRunning
+        )
+
+        self.janela.btn_inicio_resultados.click()
+        self.assertEqual(self.janela.titulo_pagina.text(), "Análise da região")
+
+    def test_painel_inicial_mostra_resumo_local(self) -> None:
+        self.janela._salvar_configuracao(avisar=False)
+        pasta_cena = self.pasta / "cenas" / "2026-01-01" / "CENA"
+        pasta_cena.mkdir(parents=True)
+        (pasta_cena / "B02.tif").write_bytes(b"1234")
+        (pasta_cena / ".B03.tif.x1.part.tif").write_bytes(b"1")
+        config = yaml.safe_load(Path(self.janela.output_path.text()).read_text(encoding="utf-8"))
+        config["download"]["pasta"] = str(self.pasta / "cenas")
+        config["dataset"]["pasta"] = str(self.pasta / "dataset")
+        config["dataset"]["catalogo"] = str(self.pasta / "patches.csv")
+        config["download"]["catalogo"] = str(self.pasta / "catalogo.csv")
+        config["analise"]["historico"] = str(self.pasta / "historico.sqlite3")
+        Path(self.janela.output_path.text()).write_text(yaml.safe_dump(config), encoding="utf-8")
+        self.janela._pool_painel.waitForDone(5000)
+        self.app.processEvents()
+
+        self.janela._atualizar_painel(sincrono=True)
+        self.app.processEvents()
+
+        self.assertEqual(self.janela.painel_valores["cenas_baixadas"].text(), "1")
+        self.assertIn("incompleto", self.janela.painel_detalhes["cenas_baixadas"].text())
+        self.assertIn(".part", self.janela.painel_avisos.text())
+        self.assertNotEqual(self.janela.painel_valores["disco"].text(), "…")
+        self.assertIn("validação científica", self.janela.painel_detalhes["modelos"].text())
+        self.assertTrue(self.janela.btn_atualizar_painel.isEnabled())
+
     def test_salva_yaml_com_os_dados_do_formulario(self) -> None:
         self.janela.nome_regiao.setText("Norte de MT")
         destino = self.janela._salvar_configuracao(avisar=False)
@@ -298,7 +365,9 @@ class TestGuiQt(TestCase):
 
         self.janela._carregar_resultado_analise(resultado)
 
-        self.assertEqual(self.janela.stack.currentIndex(), 4)
+        self.assertEqual(
+            self.janela.stack.currentIndex(), self.janela._indice_pagina("Análise da região")
+        )
         self.assertEqual(self.janela.analise_tabela.rowCount(), 1)
         self.assertEqual(self.janela.analise_tabela.item(0, 0).text(), "soja")
         self.assertIn("Detecções: 2", self.janela.analise_info.text())

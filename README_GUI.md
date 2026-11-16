@@ -18,8 +18,11 @@ python iniciar_gui.py --setup-only
 
 ## O que ela faz
 
-- navegação por visão geral, área, qualidade, Google Drive, análise, histórico e
-  configuração;
+- página **Início** com o resumo local (regiões, imagens encontradas e
+  baixadas, recortes prontos, última análise, modelos, espaço em disco e tarefa
+  atual), avisos e o próximo passo recomendado;
+- navegação por início, operações, área, qualidade, Google Drive, análise,
+  histórico e configuração;
 - mapa OpenStreetMap com seleção da bounding box usando `Shift + arrastar`;
 - execução integrada de catalogação, download, dataset, análise e sincronização;
 - log em tempo real, estado da operação e cancelamento seguro;
@@ -30,11 +33,26 @@ python iniciar_gui.py --setup-only
 - perfis locais de região em SQLite, sem armazenar OAuth ou tokens;
 - abertura da pasta de imagens e visualização dos previews RGB.
 
+## Página Início
+
+É a primeira tela. Os botões **Selecionar região**, **Buscar imagens**,
+**Analisar região** e **Consultar resultados** apenas levam à tela da etapa e
+pré-selecionam a operação; nada é baixado ou analisado sem clicar em
+**Executar operação**.
+
+O resumo é calculado em segundo plano, somente lendo arquivos locais: catálogo
+de cenas, pastas de imagens e recortes, catálogo de patches, histórico de
+análises e pesos `.pt` em `analise/models`. Ele avisa quando há downloads
+interrompidos (`.part`) ou recortes no disco sem `catalogo/patches.csv`, caso em
+que a análise não encontra entradas. "Integridade SHA-256 conferida" indica só
+que o peso coincide com o manifesto aprovado, não que o modelo foi validado
+cientificamente. Use **Atualizar resumo** após alterações externas.
+
 ## Análise agrícola na GUI
 
 Em **Dados e qualidade**, configure o modelo, confiança mínima, IoU máximo,
 tamanho da inferência, pasta de análises, histórico, geração do PDF e limite de
-imagens. Na visão geral, selecione **Analisar região com IA**.
+imagens. Em **Operações**, selecione **Analisar região com IA**.
 
 A GUI salva o YAML e inicia a CLI em um `QProcess`. A CLI baixa e processa as
 cenas com `ServicoSentinel2`, gera patches científicos multibanda e suas
@@ -109,7 +127,7 @@ percentual mínimo de dados válidos e faixa fixa do RGB PNG. A GUI expõe essa
 faixa fixa; `dataset.rgb.metodo`, percentis, caminhos e toggles avançados
 permanecem configuráveis pela edição externa do YAML.
 
-Na visão geral, **Gerar dataset das cenas locais** executa o pipeline sem novo
+Em **Operações**, **Gerar dataset das cenas locais** executa o pipeline sem novo
 download. A operação **Baixar imagens aprovadas** também gera patches quando
 **Gerar dataset após o download** estiver marcado.
 
