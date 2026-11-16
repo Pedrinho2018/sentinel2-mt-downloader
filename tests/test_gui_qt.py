@@ -550,6 +550,83 @@ class TestGuiQt(TestCase):
         self.assertTrue(externas[0].caminho_rgb.startswith("data/laboratorio/externas/"))
         self.assertTrue(foto.exists())
 
+    def _projeto_lab_importado(self, tipo: str, classes: list[str]) -> None:
+        self._preparar_laboratorio()
+        self.janela._navegar(self.janela._indice_pagina("Laboratório de IA"))
+        self.janela._lab_criar_projeto(f"Projeto {tipo}", tipo, classes)
+        self.janela._lab_importar_sistema()
+        self._aguardar_laboratorio()
+
+    def test_rotulagem_classificacao_atribui_classe_as_selecionadas(self) -> None:
+        self._projeto_lab_importado("classificacao", ["soja", "milho", "outras"])
+        painel = self.janela.lab_rotulagem
+        self.assertEqual(painel.pilha.currentIndex(), 2)
+        self.assertEqual([painel.classe.itemText(i) for i in range(painel.classe.count())], ["soja", "milho", "outras"])
+
+        painel.aplicar_classe()
+        self.assertIn("Selecione ao menos uma imagem", painel.estado_classificacao.text())
+
+        self.janela.lab_grade.item(0).setSelected(True)
+        self.janela.lab_grade.item(1).setSelected(True)
+        painel.classe.setCurrentText("milho")
+        painel.aplicar_classe()
+
+        self.assertIn("2 rotulada(s)", self.janela.lab_contagens.text())
+        self.assertIn("milho", self.janela.lab_grade.item(0).text())
+        self.janela.lab_grade.setCurrentRow(0)
+        self.assertIn("Classe: <b>milho</b>", self.janela.lab_detalhe.text())
+
+        self.janela.lab_grade.clearSelection()
+        self.janela.lab_grade.item(0).setSelected(True)
+        painel.limpar_rotulo()
+        self.assertIn("1 rotulada(s)", self.janela.lab_contagens.text())
+
+    def test_rotulagem_deteccao_lote_anotador_e_importacao(self) -> None:
+        self._projeto_lab_importado("deteccao", ["talhao"])
+        painel = self.janela.lab_rotulagem
+        self.assertEqual(painel.pilha.currentIndex(), 1)
+        self.assertFalse(painel.btn_importar.isEnabled())
+
+        painel.preparar_lote()
+        self.assertIn("Lote com 2 imagem(ns)", painel.estado_deteccao.text())
+        self.assertTrue(painel.btn_importar.isEnabled())
+        pasta_lote = self.pasta / "data/laboratorio/projetos"
+        rotulos = next(pasta_lote.rglob("labels"))
+
+        chamadas = []
+        painel.iniciar_processo = lambda exe, args, cwd: chamadas.append((exe, args, cwd)) or True
+        with patch("sentinel2_mt.laboratorio.rotulagem.shutil.which", side_effect=lambda nome: "/opt/labelImg" if nome == "labelImg" else None):
+            painel.atualizar()
+            self.assertTrue(painel.btn_anotador.isEnabled())
+            self.assertEqual(painel.btn_anotador.text(), "Abrir no LabelImg")
+            painel.abrir_anotador()
+        self.assertEqual(chamadas[0][0], "/opt/labelImg")
+        self.assertEqual(Path(chamadas[0][1][2]), rotulos)
+        self.assertIn("YOLO", painel.estado_deteccao.text())
+
+        (rotulos / "P0.txt").write_text("0 0.5 0.5 0.2 0.2\n", encoding="utf-8")
+        (rotulos / "P1.txt").write_text("0 0.99 0.5 0.2 0.2\n", encoding="utf-8")
+        painel.importar()
+
+        self.assertIn("1 imagem(ns) rotulada(s); 1 com erro", painel.estado_deteccao.text())
+        self.assertIn("1 a revisar", self.janela.lab_contagens.text())
+        legendas = [self.janela.lab_grade.item(i).text() for i in range(self.janela.lab_grade.count())]
+        self.assertTrue(any("1 caixa(s)" in legenda for legenda in legendas))
+        self.assertTrue(any("revisar" in legenda for legenda in legendas))
+
+    def test_rotulagem_sem_anotador_orienta_instalacao_separada(self) -> None:
+        self._projeto_lab_importado("deteccao", ["talhao"])
+        painel = self.janela.lab_rotulagem
+        painel.preparar_lote()
+        with patch("sentinel2_mt.laboratorio.rotulagem.shutil.which", return_value=None):
+            painel.atualizar()
+        self.assertFalse(painel.btn_anotador.isEnabled())
+        self.assertIn("pipx", painel.btn_anotador.toolTip())
+        abertas = []
+        painel.abrir_url = lambda url: abertas.append(url.toLocalFile()) or True
+        painel.abrir_pasta()
+        self.assertTrue(abertas[0].endswith("lote-atual"))
+
     def test_salva_yaml_com_os_dados_do_formulario(self) -> None:
         self.janela.nome_regiao.setText("Norte de MT")
         destino = self.janela._salvar_configuracao(avisar=False)

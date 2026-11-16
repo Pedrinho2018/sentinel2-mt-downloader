@@ -34,6 +34,7 @@ from sentinel2_mt.gui_support import (
     normalizar_bbox,
 )
 from sentinel2_mt.gui_theme import CORES, folha_estilos
+from gui_rotulagem import PainelRotulagem
 from sentinel2_mt.painel import ResumoPainel, coletar_resumo_painel, formatar_bytes
 from sentinel2_mt.assistente_download import (
     CenaEncontrada,
@@ -2277,6 +2278,14 @@ class MainWindow(QtWidgets.QMainWindow):
         projeto.layout_principal.addWidget(self.lab_status)
         layout.addWidget(projeto)
 
+        rotulagem = Cartao("Rotulagem")
+        self.lab_rotulagem = PainelRotulagem(
+            self._lab_contexto, self._lab_projeto_id, self._lab_selecionadas, self
+        )
+        self.lab_rotulagem.rotulosAlterados.connect(lambda _tipo: self._lab_projeto_alterado())
+        rotulagem.layout_principal.addWidget(self.lab_rotulagem)
+        layout.addWidget(rotulagem)
+
         imagens = Cartao("Imagens do dataset")
         self.lab_contagens = QtWidgets.QLabel("")
         imagens.layout_principal.addWidget(self.lab_contagens)
@@ -2313,25 +2322,36 @@ class MainWindow(QtWidgets.QMainWindow):
         self.lab_grade = QtWidgets.QListWidget()
         self.lab_grade.setViewMode(QtWidgets.QListView.ViewMode.IconMode)
         self.lab_grade.setIconSize(QtCore.QSize(112, 112))
-        self.lab_grade.setGridSize(QtCore.QSize(132, 150))
+        self.lab_grade.setGridSize(QtCore.QSize(132, 172))
         self.lab_grade.setResizeMode(QtWidgets.QListView.ResizeMode.Adjust)
         self.lab_grade.setMovement(QtWidgets.QListView.Movement.Static)
         self.lab_grade.setUniformItemSizes(True)
         self.lab_grade.setWordWrap(True)
+        self.lab_grade.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.lab_grade.currentRowChanged.connect(self._lab_mostrar_detalhe)
         divisor.addWidget(self.lab_grade)
         self.lab_detalhe = QtWidgets.QLabel("Selecione uma imagem.")
         self.lab_detalhe.setWordWrap(True)
         self.lab_detalhe.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
-        self.lab_detalhe.setMinimumWidth(260)
         self.lab_detalhe.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
-        divisor.addWidget(self.lab_detalhe)
+        rolagem_detalhe = QtWidgets.QScrollArea()
+        rolagem_detalhe.setWidgetResizable(True)
+        rolagem_detalhe.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        rolagem_detalhe.setMinimumWidth(280)
+        rolagem_detalhe.setWidget(self.lab_detalhe)
+        divisor.addWidget(rolagem_detalhe)
         divisor.setSizes([820, 300])
         imagens.layout_principal.addWidget(divisor, 1)
         layout.addWidget(imagens, 1)
         self._lab_imagens: list[ImagemDataset] = []
         self._lab_visiveis: list[ImagemDataset] = []
+        self._lab_rotulos: dict[str, tuple[str, int]] = {}
+        self._lab_anotacoes: dict[str, dict] = {}
         return pagina
+
+    def _lab_selecionadas(self) -> list[str]:
+        linhas = sorted({indice.row() for indice in self.lab_grade.selectedIndexes()})
+        return [self._lab_visiveis[linha].patch_id for linha in linhas if linha < len(self._lab_visiveis)]
 
     def _lab_contexto(
         self, criar: bool = True
@@ -2381,8 +2401,11 @@ class MainWindow(QtWidgets.QMainWindow):
         contexto = self._lab_contexto() if tem_projeto else None
         if contexto is None or projeto_id is None:
             self._lab_imagens = []
+            self._lab_rotulos = {}
+            self._lab_anotacoes = {}
             self.lab_info_projeto.setText("Crie um projeto para começar.")
             self._lab_renderizar()
+            self.lab_rotulagem.atualizar()
             return
         repo = contexto[2]
         self._lab_pasta_cache = contexto[1]
@@ -2398,6 +2421,8 @@ class MainWindow(QtWidgets.QMainWindow):
             f"Esquema de classes v{esquema.versao}: {', '.join(esquema.classes)}"
         )
         self._lab_imagens = repo.listar_imagens(projeto_id)
+        self._lab_rotulos = repo.rotulos_classificacao(projeto_id)
+        self._lab_anotacoes = repo.anotacoes_deteccao(projeto_id)
         safra_atual = self.lab_filtro_safra.currentData()
         self.lab_filtro_safra.blockSignals(True)
         self.lab_filtro_safra.clear()
@@ -2415,6 +2440,7 @@ class MainWindow(QtWidgets.QMainWindow):
             f"{contagens['nao_verificadas']} não verificada(s)"
         )
         self._lab_renderizar()
+        self.lab_rotulagem.atualizar()
 
     def _lab_renderizar(self) -> None:
         if not hasattr(self, "lab_grade"):
@@ -2432,7 +2458,14 @@ class MainWindow(QtWidgets.QMainWindow):
         contexto_pasta = getattr(self, "_lab_pasta_cache", None)
         self.lab_grade.clear()
         for imagem in self._lab_visiveis[:3000]:
-            item = QtWidgets.QListWidgetItem(f"{imagem.data or 'externa'}\n{imagem.tile or imagem.patch_id[-10:]}")
+            legenda = imagem.tile or imagem.patch_id[-10:]
+            if imagem.patch_id in self._lab_rotulos:
+                legenda = self._lab_rotulos[imagem.patch_id][0]
+            elif imagem.patch_id in self._lab_anotacoes:
+                legenda = f"{self._lab_anotacoes[imagem.patch_id]['caixas']} caixa(s)"
+            if imagem.estado_rotulo == "revisar":
+                legenda = "⚠ revisar"
+            item = QtWidgets.QListWidgetItem(f"{imagem.data or 'externa'}\n{legenda}")
             if contexto_pasta is not None:
                 miniatura = caminho_miniatura(contexto_pasta, imagem)
                 if miniatura.is_file():
@@ -2468,6 +2501,14 @@ class MainWindow(QtWidgets.QMainWindow):
             linhas.append(f"GeoTIFF científico: {imagem.caminho_geotiff}")
         if imagem.duplicata_de:
             linhas.append(f"<span style='color:{CORES['perigo_texto']}'>Duplicata de {imagem.duplicata_de}</span>")
+        if imagem.patch_id in self._lab_rotulos:
+            classe, versao = self._lab_rotulos[imagem.patch_id]
+            linhas.append(f"Classe: <b>{classe}</b> (esquema v{versao})")
+        anotacao = self._lab_anotacoes.get(imagem.patch_id)
+        if anotacao is not None:
+            linhas.append(f"Anotação: {anotacao['caixas']} caixa(s) (esquema v{anotacao['versao_esquema']})")
+            for erro in anotacao["erros"][:5]:
+                linhas.append(f"<span style='color:{CORES['perigo_texto']}'>• {erro}</span>")
         self.lab_detalhe.setText("<br>".join(linhas))
 
     # -------------------------------------------------------- Laboratório: projetos

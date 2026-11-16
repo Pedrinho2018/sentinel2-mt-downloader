@@ -180,6 +180,7 @@ class TestCliProgresso(TestCase):
 
         linha = saida.getvalue().strip()
         self.assertTrue(linha.startswith("[PROGRESSO] "))
+        self.assertTrue(linha.isascii())
         self.assertEqual(json.loads(linha[len("[PROGRESSO] "):])["cena"], "Á")
 
     def test_cli_repassa_cenas_e_progresso_ao_servico(self) -> None:

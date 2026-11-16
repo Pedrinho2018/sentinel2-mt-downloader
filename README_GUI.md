@@ -125,6 +125,58 @@ virão nas próximas entregas (veja `docs/roadmap-plataforma-agricola.md`).
   agosto, ex.: `2025/2026`), nuvens, estado de rotulagem, só duplicatas e só
   com problema. A grade mostra miniaturas em cache.
 
+### Rotulagem
+
+O cartão **Rotulagem** muda conforme o tipo do projeto.
+
+**Detecção (caixas)**: a anotação é feita em uma ferramenta externa que grave
+YOLO `.txt`; o código da ferramenta não é alterado.
+
+1. **Preparar lote**: copia as imagens pendentes ou a revisar (ou só as
+   selecionadas) para `laboratorio.pasta/projetos/<id>/rotulagem/lote-atual/images`,
+   com nome `<patch_id>.png`, grava `classes.txt` com o esquema atual (o ID
+   YOLO é a posição da classe na lista) e coloca em `labels/` as anotações já
+   importadas, para revisão e correção. Duplicatas e imagens com problema de
+   integridade ficam fora. Os arquivos do pipeline nunca são entregues ao
+   anotador.
+2. **Abrir no anotador**: abre o LabelImg ou o X-AnyLabeling, se algum estiver
+   no `PATH`. Nenhum anotador é instalado pela aplicação. **Abrir pasta do
+   lote** funciona com qualquer ferramenta que grave YOLO `.txt`.
+
+   **Instalação do LabelImg (validada em 16/11/2026).** O LabelImg 1.8.6, a
+   última versão publicada, só funciona em **Python 3.9**: em 3.12+ ele não abre
+   (importa `distutils`) e em 3.10+ falha ao desenhar caixas (coordenadas
+   fracionárias no PyQt5). Instale-o num ambiente isolado, sem tocar na `.venv`
+   do aplicativo (PySide6):
+
+   ```bash
+   pipx install uv
+   uv tool install --python 3.9 labelImg
+   ```
+
+   O `uv` baixa um Python 3.9 próprio e cria o comando `labelImg` no `PATH`;
+   o aplicativo o encontra sozinho. Validado com Python 3.9.25, PyQt5 5.15.11
+   e lxml 6.1.3 (relatório em `reports/validacao-labelimg-e6.md`).
+
+   **Atenção ao formato:** o LabelImg abre em **PascalVOC**. Antes de salvar,
+   clique no botão de formato (abaixo de *Save*) até aparecer **YOLO**. Arquivos
+   `.xml` não são importados; a importação avisa quando encontra só `.xml`.
+3. **Importar anotações**: valida cada `.txt` (5 valores por linha, ID dentro
+   do esquema, coordenadas normalizadas, caixa dentro da imagem, sem
+   duplicatas) e grava no banco. Arquivos válidos marcam a imagem como
+   rotulada; com erro, ela vai para **revisar** com as mensagens por linha no
+   painel de detalhes. Arquivo vazio significa "rotulada, sem talhões". Imagens
+   sem `.txt` continuam pendentes. Se o anotador acrescentar classes ao
+   `classes.txt`, a importação avisa e não as aceita; use **Editar classes**.
+
+**Classificação (uma classe por imagem)**: selecione imagens na grade
+(Ctrl/Shift para várias), escolha a classe e clique em **Aplicar às
+selecionadas**; **Limpar rótulo** devolve a imagem para pendente. Não há caixas.
+
+Ao criar uma nova versão de classes, rótulos que deixam de ser compatíveis vão
+para **revisar**: na classificação, quando a classe sumiu; na detecção, quando
+as classes já usadas mudaram de posição (o que trocaria o significado dos IDs).
+
 Banco, miniaturas e cópias externas ficam em `laboratorio.pasta` (padrão
 `data/laboratorio`; nos pacotes Linux, `~/.local/share/sentinel2-mt/laboratorio`).
 O banco tem permissão restrita e guarda somente metadados, hashes e caminhos.
