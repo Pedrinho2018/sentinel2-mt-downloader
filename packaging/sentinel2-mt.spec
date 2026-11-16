@@ -14,6 +14,11 @@ fundo_gui = ROOT / "assets" / "mato-grosso-background.png"
 if fundo_gui.is_file():
     datas.append((str(fundo_gui), "assets"))
 
+# Lista local de municípios (gerada por tools/gerar_municipios_ibge.py).
+municipios_ibge = ROOT / "assets" / "municipios_ibge.json"
+if municipios_ibge.is_file():
+    datas.append((str(municipios_ibge), "assets"))
+
 for pacote in (
     "rasterio",
     "textual",

@@ -91,7 +91,7 @@ E5; isso não foi testado nesta entrega.
 
 - **Início** (E1, pronto): indicadores locais, tarefa atual, avisos e próximo
   passo; quatro ações com nomes simples que apenas navegam.
-- **Região** (E2): pesquisa de município, desenho de retângulo/polígono,
+- **Região** (E2, pronto): pesquisa de município, desenho de retângulo/polígono,
   importação GeoJSON/Shapefile e favoritos sobre `LocalConfigStore`.
 - **Assistente de download** (E3): período → busca → tabela de cenas com data,
   nuvem e preview → seleção → download com progresso por arquivo, velocidade,
@@ -149,7 +149,7 @@ Princípios:
 | # | Entrega | Prioridade | Critérios objetivos de aceite |
 | --- | --- | --- | --- |
 | E1 | **Painel inicial** (feito) | P0 | página "Início" é a primeira; mostra regiões, cenas catalogadas/baixadas, recortes, última análise, modelos com integridade SHA-256, espaço em disco, tarefa atual; avisa `.part` órfão e catálogo ausente; cálculo fora da thread da GUI; não altera arquivos (teste); suíte completa verde |
-| E2 | Região simplificada | P0 | busca de município offline por lista IBGE embutida; desenho de retângulo; importação GeoJSON (Shapefile opcional com dependência opcional); bbox derivada preserva CRS EPSG:4326; favoritos reutilizam `LocalConfigStore`; testes sem rede |
+| E2 | Região simplificada (feito) | P0 | busca de município offline por lista IBGE embutida; desenho de retângulo; importação GeoJSON (Shapefile opcional com dependência opcional); bbox derivada preserva CRS EPSG:4326; favoritos reutilizam `LocalConfigStore`; testes sem rede |
 | E3 | Assistente de download | P0 | passos 1–7 navegáveis; tabela de cenas a partir de catalogação existente; progresso estruturado `[PROGRESSO] {json}` da CLI (bytes, total, velocidade); cancelar remove `.part`; retomada `Range` testada com servidor fake; limpeza de `.part` órfãos com confirmação |
 | E4 | Resultados agrícolas | P0 | abas "Talhões (detecção)" e "Culturas (classificação)"; culturas exibem "não determinada" sem modelo aprovado; histórico filtrável; exportação CSV/JSON; nenhum texto menciona hectares |
 | E5 | Datasets do Laboratório | P1 | criar projeto com tipo e esquema de classes versionado; importar patches do catálogo sem copiar GeoTIFF; SHA-256 e detecção de duplicatas; verificação de integridade; filtros por região, data, nuvem e estado de rotulagem |
@@ -175,3 +175,20 @@ adicionar testes sem rede, atualizar a documentação e passar na suíte complet
 
 "Integridade conferida" significa apenas que o SHA-256 do peso coincide com o
 manifesto aprovado. Não é evidência de acurácia nem de validação científica.
+
+## 6. Entrega E2 — o que mudou
+
+- `src/sentinel2_mt/area.py`: importação de GeoJSON (incluindo `crs` legado e
+  reprojeção por `rasterio.warp.transform_bounds`) e de Shapefile pelo
+  cabeçalho do `.shp` + `.prj`, sem novas dependências; busca de municípios sem
+  acentos.
+- `tools/gerar_municipios_ibge.py`: gera `assets/municipios_ibge.json` a partir
+  das APIs de localidades e malhas do IBGE (executado manualmente, com rede).
+- GUI: pesquisa unificada de municípios e favoritas, botão **Desenhar área**
+  (sem Shift), **Importar limite…**, lista de **Regiões favoritas** e menu
+  lateral sincronizado com a navegação feita por botões.
+- Empacotamento Linux inclui `assets/municipios_ibge.json` quando existir.
+
+Limitações conhecidas: a área usada continua sendo um retângulo; o contorno do
+polígono não é desenhado no mapa nem usado para recortar resultados. Shapefile
+compactado (`.zip`) e KML não são aceitos.

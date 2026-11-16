@@ -23,7 +23,10 @@ python iniciar_gui.py --setup-only
   atual), avisos e o próximo passo recomendado;
 - navegação por início, operações, área, qualidade, Google Drive, análise,
   histórico e configuração;
-- mapa OpenStreetMap com seleção da bounding box usando `Shift + arrastar`;
+- mapa OpenStreetMap com seleção da bounding box pelo botão **Desenhar área**
+  ou usando `Shift + arrastar`;
+- pesquisa de municípios (sem acento) e de regiões favoritas, importação de
+  limites GeoJSON e Shapefile;
 - execução integrada de catalogação, download, dataset, análise e sincronização;
 - log em tempo real, estado da operação e cancelamento seguro;
 - escolha do JSON OAuth e sincronização em lotes;
@@ -32,6 +35,28 @@ python iniciar_gui.py --setup-only
 - geração do dataset junto ao download ou a partir das cenas locais;
 - perfis locais de região em SQLite, sem armazenar OAuth ou tokens;
 - abertura da pasta de imagens e visualização dos previews RGB.
+
+## Área e período
+
+- **Pesquisar município ou região favorita**: digite parte do nome, com ou sem
+  acento. Municípios vêm de `assets/municipios_ibge.json`, lista local gerada a
+  partir da API do IBGE com `tools/gerar_municipios_ibge.py --uf MT`; a busca não
+  usa a internet. Sem esse arquivo, a GUI mostra como gerá-lo. O retângulo de
+  cada município é aproximado (malha de qualidade intermediária) e pode ser
+  ajustado.
+- **Desenhar área**: ative o botão e clique e arraste no mapa; a área é aplicada
+  ao soltar o mouse. `Shift + arrastar` continua funcionando.
+- **Importar limite…**: aceita GeoJSON (`.geojson`, `.json`) e Shapefile (`.shp`
+  com o `.prj` na mesma pasta). Sistemas projetados, como SIRGAS 2000 / UTM, são
+  convertidos para EPSG:4326 com amostragem das bordas, de modo que o retângulo
+  final envolva a área original. Shapefile sem `.prj`, geometria sem área ou
+  coordenadas fora do intervalo geográfico são recusados com mensagem.
+- **Retângulo, não contorno**: a consulta ao STAC e o pipeline usam bounding
+  box. Um polígono importado é reduzido ao seu retângulo envolvente, e a tela
+  informa isso.
+- **Regiões favoritas**: **Salvar como região favorita** grava área, período e
+  parâmetros no SQLite local (sem credenciais). A lista ao lado abre a região
+  com clique duplo; as favoritas também aparecem na pesquisa.
 
 ## Página Início
 

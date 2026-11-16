@@ -32,6 +32,7 @@ class TestGuiQt(TestCase):
 
         class MapaFake(QtWidgets.QWidget):
             areaSelecionada = QtCore.Signal(object)
+            desenhoConcluido = QtCore.Signal()
 
             def __init__(self, bbox_inicial, parent=None):
                 super().__init__(parent)
@@ -46,6 +47,10 @@ class TestGuiQt(TestCase):
             def reativar(self):
                 pass
 
+            def ativar_desenho(self, ativo=True):
+                self.desenhando = ativo
+                return True
+
         gui.MapaWidget = MapaFake
 
     @classmethod
@@ -56,6 +61,19 @@ class TestGuiQt(TestCase):
         self.temporario = TemporaryDirectory()
         self.pasta = Path(self.temporario.name)
         gui.LOCAL_DB = self.pasta / "perfis.db"
+        self.municipios_original = gui.MUNICIPIOS_IBGE
+        gui.MUNICIPIOS_IBGE = self.pasta / "municipios.json"
+        gui.MUNICIPIOS_IBGE.write_text(
+            json.dumps(
+                {
+                    "municipios": [
+                        {"codigo_ibge": "5107925", "nome": "Sorriso", "uf": "MT", "bbox": [-56.3, -13.1, -55.2, -12.0]},
+                        {"codigo_ibge": "5103403", "nome": "Cuiabá", "uf": "MT", "bbox": [-56.3, -15.7, -55.4, -15.0]},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
         self.script_original = gui.SCRIPT_CLI
         self.janela = gui.MainWindow()
         self.janela.output_path.setText(str(self.pasta / "config.yaml"))
@@ -68,6 +86,7 @@ class TestGuiQt(TestCase):
             self.janela.processo.waitForFinished(1000)
         self.janela.close()
         gui.SCRIPT_CLI = self.script_original
+        gui.MUNICIPIOS_IBGE = self.municipios_original
         self.temporario.cleanup()
 
     def _aguardar_processo(self, segundos: float = 5) -> None:
@@ -123,6 +142,8 @@ class TestGuiQt(TestCase):
     def test_acoes_do_inicio_navegam_sem_executar(self) -> None:
         self.janela.btn_inicio_regiao.click()
         self.assertEqual(self.janela.titulo_pagina.text(), "Área e período")
+        indice_area = self.janela._indice_pagina("Área e período")
+        self.assertTrue(self.janela.botoes_navegacao[indice_area].isChecked())
 
         self.janela.btn_inicio_buscar.click()
         self.assertEqual(self.janela.titulo_pagina.text(), "Operações")
@@ -162,6 +183,87 @@ class TestGuiQt(TestCase):
         self.assertNotEqual(self.janela.painel_valores["disco"].text(), "…")
         self.assertIn("validação científica", self.janela.painel_detalhes["modelos"].text())
         self.assertTrue(self.janela.btn_atualizar_painel.isEnabled())
+
+    def test_pesquisa_municipio_sem_acento_aplica_area(self) -> None:
+        self.janela.busca_area.setText("cuiaba")
+        self.assertFalse(self.janela.resultados_area.isHidden())
+        item = self.janela.resultados_area.item(0)
+        self.assertIn("Cuiabá (MT)", item.text())
+
+        self.janela._usar_resultado_area(item)
+
+        self.assertEqual(self.janela.nome_regiao.text(), "Cuiabá")
+        self.assertEqual(self.janela.uf.text(), "MT")
+        self.assertEqual(self.janela._bbox_atual(), [-56.3, -15.7, -55.4, -15.0])
+        self.assertEqual(self.janela.mapa.bbox, [-56.3, -15.7, -55.4, -15.0])
+        self.assertIn("aproximado", self.janela.area_mensagem.text())
+        self.assertTrue(self.janela.resultados_area.isHidden())
+
+    def test_pesquisa_sem_lista_de_municipios_orienta_geracao(self) -> None:
+        gui.MUNICIPIOS_IBGE.unlink()
+        self.janela.__dict__.pop("_cache_municipios", None)
+
+        self.janela.busca_area.setText("Sorriso")
+
+        self.assertIn("gerar_municipios_ibge", self.janela.resultados_area.item(0).text())
+
+    def test_importa_geojson_e_informa_retangulo_envolvente(self) -> None:
+        caminho = self.pasta / "fazenda.geojson"
+        caminho.write_text(
+            json.dumps(
+                {
+                    "type": "Feature",
+                    "properties": {"nome": "Fazenda Teste"},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[[-55.9, -12.7], [-55.6, -12.7], [-55.6, -12.4], [-55.9, -12.7]]],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        area = self.janela._importar_limite_de(caminho)
+
+        self.assertIsNotNone(area)
+        self.assertEqual(self.janela.nome_regiao.text(), "Fazenda Teste")
+        self.assertEqual(self.janela._bbox_atual(), [-55.9, -12.7, -55.6, -12.4])
+        self.assertIn("retângulo envolvente", self.janela.area_mensagem.text())
+
+    def test_importacao_invalida_nao_altera_area(self) -> None:
+        antes = self.janela._bbox_atual()
+        caminho = self.pasta / "ponto.geojson"
+        caminho.write_text('{"type": "Point", "coordinates": [-55, -12]}', encoding="utf-8")
+
+        with patch.object(gui.QtWidgets.QMessageBox, "warning") as aviso:
+            area = self.janela._importar_limite_de(caminho)
+
+        self.assertIsNone(area)
+        aviso.assert_called_once()
+        self.assertEqual(self.janela._bbox_atual(), antes)
+
+    def test_favorita_salva_aparece_na_lista_e_na_busca(self) -> None:
+        self.janela.nome_regiao.setText("Talhões Norte")
+        self.janela.oeste.setValue(-56.0)
+        self.janela._salvar_perfil()
+        self.assertIn("Talhões Norte", self.janela.favoritos_area.item(0).text())
+
+        self.janela.nome_regiao.setText("Outra")
+        self.janela.oeste.setValue(-57.0)
+        self.janela._abrir_favorita(self.janela.favoritos_area.item(0))
+        self.assertEqual(self.janela.nome_regiao.text(), "Talhões Norte")
+        self.assertEqual(self.janela.oeste.value(), -56.0)
+
+        self.janela.busca_area.setText("talhoes")
+        self.assertIn("região favorita", self.janela.resultados_area.item(0).text())
+
+    def test_desenhar_area_ativa_modo_e_desliga_ao_concluir(self) -> None:
+        self.janela.btn_desenhar_area.setChecked(True)
+        self.assertTrue(self.janela.mapa.desenhando)
+
+        self.janela.mapa.desenhoConcluido.emit()
+
+        self.assertFalse(self.janela.btn_desenhar_area.isChecked())
 
     def test_salva_yaml_com_os_dados_do_formulario(self) -> None:
         self.janela.nome_regiao.setText("Norte de MT")

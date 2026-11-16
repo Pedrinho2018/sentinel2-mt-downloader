@@ -22,6 +22,14 @@ from sentinel2_mt.gui_support import (
 )
 from sentinel2_mt.gui_theme import CORES, folha_estilos
 from sentinel2_mt.painel import ResumoPainel, coletar_resumo_painel, formatar_bytes
+from sentinel2_mt.area import (
+    AreaImportada,
+    Municipio,
+    buscar_municipios,
+    carregar_municipios,
+    importar_area,
+    normalizar_texto,
+)
 
 
 EMPACOTADO = bool(getattr(sys, "frozen", False))
@@ -42,6 +50,7 @@ else:
 
 GUI_ASSETS = Path(getattr(sys, "_MEIPASS", ROOT)) / "assets"
 FUNDO_GUI = GUI_ASSETS / "mato-grosso-background.png"
+MUNICIPIOS_IBGE = GUI_ASSETS / "municipios_ibge.json"
 
 # Compatibilidade com integrações que importavam esta função do módulo da GUI.
 bbox_para_yaml = normalizar_bbox
@@ -243,6 +252,7 @@ class MapaWidget(QWebEngineView):
     areaSelecionada = QtCore.Signal(object)
     mapaPronto = QtCore.Signal()
     mapaErro = QtCore.Signal(str)
+    desenhoConcluido = QtCore.Signal()
 
     def __init__(self, bbox_inicial: list[float], parent=None) -> None:
         super().__init__(parent)
@@ -265,6 +275,12 @@ class MapaWidget(QWebEngineView):
         self._timer_estado.setInterval(250)
         self._timer_estado.timeout.connect(self._verificar_estado)
         self.loadFinished.connect(self._ao_carregar)
+
+        # Verifica a seleção apenas enquanto o modo de desenho está ativo.
+        self._versao_selecao = 0
+        self._timer_desenho = QtCore.QTimer(self)
+        self._timer_desenho.setInterval(300)
+        self._timer_desenho.timeout.connect(self._verificar_desenho)
 
     def showEvent(self, evento: QtGui.QShowEvent) -> None:
         super().showEvent(evento)
@@ -357,6 +373,33 @@ class MapaWidget(QWebEngineView):
             f"window.setSelection && window.setSelection({json.dumps(self._bbox_pendente)});"
         )
 
+    def ativar_desenho(self, ativo: bool = True) -> bool:
+        """Liga o desenho com clique e arraste, sem exigir a tecla Shift."""
+        if not self._mapa_pronto:
+            return False
+        self.page().runJavaScript(
+            f"window.setDrawMode && window.setDrawMode({'true' if ativo else 'false'});"
+        )
+        if ativo:
+            self._timer_desenho.start()
+        else:
+            self._timer_desenho.stop()
+        return True
+
+    def _verificar_desenho(self) -> None:
+        self.page().runJavaScript("window.selectionVersion || 0", self._receber_versao_selecao)
+
+    def _receber_versao_selecao(self, valor: object) -> None:
+        try:
+            versao = int(valor or 0)
+        except (TypeError, ValueError):
+            return
+        if versao > self._versao_selecao:
+            self._versao_selecao = versao
+            self._timer_desenho.stop()
+            self.capturar_bbox()
+            self.desenhoConcluido.emit()
+
     def capturar_bbox(self) -> None:
         if not self._mapa_pronto:
             self.areaSelecionada.emit(None)
@@ -396,9 +439,11 @@ class MapaWidget(QWebEngineView):
             background: rgba(16,43,36,.92); color: white; border-radius: 8px; padding: 8px 12px;
             font: 12px sans-serif; box-shadow: 0 3px 12px rgba(0,0,0,.18); }
         </style></head><body><div id="map"></div>
-        <div class="hint">Segure Shift e arraste para selecionar uma área</div>
+        <div class="hint" id="hint">Use "Desenhar área" ou segure Shift e arraste para selecionar</div>
         <script nonce="sentinel2-map">
           window.currentSelection = null;
+          window.selectionVersion = 0;
+          window.drawMode = false;
           window.mapReady = false;
           window.mapError = '';
           let map = null;
@@ -417,6 +462,17 @@ class MapaWidget(QWebEngineView):
             setTimeout(() => map.invalidateSize(), 100);
           };
 
+          window.setDrawMode = function(ativo) {
+            window.drawMode = !!ativo;
+            const dica = document.getElementById('hint');
+            if (dica) {
+              dica.textContent = window.drawMode
+                ? 'Clique e arraste no mapa para desenhar a área'
+                : 'Use "Desenhar área" ou segure Shift e arraste para selecionar';
+            }
+            if (map) map.getContainer().style.cursor = window.drawMode ? 'crosshair' : '';
+          };
+
           window.invalidateMapSize = function() {
             if (map) map.invalidateSize();
           };
@@ -428,7 +484,7 @@ class MapaWidget(QWebEngineView):
                 attribution: '&copy; OpenStreetMap contributors'
               }).addTo(map);
               map.on('mousedown', function(event) {
-                if (!event.originalEvent.shiftKey) return;
+                if (!event.originalEvent.shiftKey && !window.drawMode) return;
                 start = event.latlng;
                 map.dragging.disable();
               });
@@ -447,6 +503,8 @@ class MapaWidget(QWebEngineView):
                 ], false);
                 start = null;
                 map.dragging.enable();
+                window.selectionVersion += 1;
+                window.setDrawMode(false);
               });
               window.addEventListener('resize', window.invalidateMapSize);
               window.mapReady = true;
@@ -1060,8 +1118,37 @@ class MainWindow(QtWidgets.QMainWindow):
 
         bbox_inicial = [self.oeste.value(), self.sul.value(), self.leste.value(), self.norte.value()]
         self.mapa = MapaWidget(bbox_inicial, self)
-        mapa_card = Cartao("Área de interesse", "Navegue normalmente; use Shift + arraste para desenhar.")
+        mapa_card = Cartao(
+            "Área de interesse",
+            "Pesquise um município, desenhe no mapa ou importe um limite. "
+            "A busca de imagens usa o retângulo mostrado em verde.",
+        )
+        busca = QtWidgets.QHBoxLayout()
+        self.busca_area = QtWidgets.QLineEdit()
+        self.busca_area.setPlaceholderText("Pesquisar município ou região favorita (ex.: Sorriso)")
+        self.busca_area.setClearButtonEnabled(True)
+        self.busca_area.textChanged.connect(self._pesquisar_area)
+        busca.addWidget(self.busca_area, 1)
+        self.btn_desenhar_area = botao("Desenhar área")
+        self.btn_desenhar_area.setCheckable(True)
+        self.btn_desenhar_area.toggled.connect(self._alternar_desenho)
+        self.btn_importar_area = botao("Importar limite…")
+        self.btn_importar_area.setToolTip("GeoJSON (.geojson, .json) ou Shapefile (.shp com .prj)")
+        self.btn_importar_area.clicked.connect(self._importar_limite)
+        busca.addWidget(self.btn_desenhar_area)
+        busca.addWidget(self.btn_importar_area)
+        mapa_card.layout_principal.addLayout(busca)
+        self.resultados_area = QtWidgets.QListWidget()
+        self.resultados_area.setMaximumHeight(150)
+        self.resultados_area.hide()
+        self.resultados_area.itemActivated.connect(self._usar_resultado_area)
+        self.resultados_area.itemClicked.connect(self._usar_resultado_area)
+        mapa_card.layout_principal.addWidget(self.resultados_area)
         mapa_card.layout_principal.addWidget(self.mapa, 1)
+        self.area_mensagem = QtWidgets.QLabel("")
+        self.area_mensagem.setObjectName("cardHelp")
+        self.area_mensagem.setWordWrap(True)
+        mapa_card.layout_principal.addWidget(self.area_mensagem)
         aplicar = botao("Aplicar seleção do mapa", "primaryButton")
         aplicar.clicked.connect(self.mapa.capturar_bbox)
         mapa_card.layout_principal.addWidget(aplicar)
@@ -1078,12 +1165,152 @@ class MainWindow(QtWidgets.QMainWindow):
         form.addRow(rotulo_com_ajuda("Leste", "Longitude do lado direito da área. Deve ser maior que Oeste."), self.leste)
         form.addRow(rotulo_com_ajuda("Norte", "Latitude do lado superior da área. Deve ser maior que Sul."), self.norte)
         detalhes.layout_principal.addLayout(form)
-        salvar_perfil = botao("Salvar como perfil local")
+        salvar_perfil = botao("Salvar como região favorita")
         salvar_perfil.clicked.connect(self._salvar_perfil)
         detalhes.layout_principal.addWidget(salvar_perfil)
-        detalhes.layout_principal.addStretch()
+        rotulo_favoritas = QtWidgets.QLabel("Regiões favoritas")
+        rotulo_favoritas.setObjectName("cardTitle")
+        detalhes.layout_principal.addWidget(rotulo_favoritas)
+        self.favoritos_area = QtWidgets.QListWidget()
+        self.favoritos_area.setToolTip("Clique duas vezes para abrir a região.")
+        self.favoritos_area.itemDoubleClicked.connect(self._abrir_favorita)
+        detalhes.layout_principal.addWidget(self.favoritos_area, 1)
         layout.addWidget(detalhes, 1)
         return pagina
+
+    # ------------------------------------------------------------ Área de interesse
+
+    def _municipios(self) -> list[Municipio]:
+        if not hasattr(self, "_cache_municipios"):
+            try:
+                self._cache_municipios = carregar_municipios(MUNICIPIOS_IBGE)
+            except (OSError, ValueError) as erro:
+                self.statusBar().showMessage(f"Lista de municípios inválida: {erro}", 6000)
+                self._cache_municipios = []
+        return self._cache_municipios
+
+    def _pesquisar_area(self, termo: str) -> None:
+        self.resultados_area.clear()
+        alvo = normalizar_texto(termo)
+        if len(alvo) < 2:
+            self.resultados_area.hide()
+            return
+        for perfil in self.store.listar():
+            if alvo in normalizar_texto(str(perfil["nome_regiao"])):
+                item = QtWidgets.QListWidgetItem(
+                    f"★ {perfil['nome_regiao']} ({perfil['uf'] or '—'}) — região favorita"
+                )
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, ("favorita", int(perfil["id"])))
+                self.resultados_area.addItem(item)
+        municipios = self._municipios()
+        for municipio in buscar_municipios(municipios, termo, limite=10):
+            item = QtWidgets.QListWidgetItem(f"{municipio.nome} ({municipio.uf}) — município")
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, ("municipio", municipio))
+            self.resultados_area.addItem(item)
+        if self.resultados_area.count() == 0:
+            texto = (
+                "Nenhum resultado encontrado."
+                if municipios
+                else "Lista de municípios não instalada; gere-a com tools/gerar_municipios_ibge.py."
+            )
+            vazio = QtWidgets.QListWidgetItem(texto)
+            vazio.setFlags(QtCore.Qt.ItemFlag.NoItemFlags)
+            self.resultados_area.addItem(vazio)
+        self.resultados_area.show()
+
+    def _usar_resultado_area(self, item: QtWidgets.QListWidgetItem) -> None:
+        dados = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        if not dados:
+            return
+        tipo, valor = dados
+        if tipo == "favorita":
+            self._abrir_favorita_por_id(int(valor))
+        elif tipo == "municipio":
+            self._aplicar_area(
+                valor.nome,
+                valor.uf,
+                list(valor.bbox),
+                "Município do IBGE (retângulo aproximado). Ajuste a área se precisar.",
+            )
+        self.resultados_area.hide()
+
+    def _aplicar_area(self, nome: str, uf: str, bbox: list[float], mensagem: str) -> None:
+        bbox = normalizar_bbox(bbox)
+        self.nome_regiao.setText(nome)
+        if uf:
+            self.uf.setText(uf[:2].upper())
+        self.oeste.setValue(bbox[0])
+        self.sul.setValue(bbox[1])
+        self.leste.setValue(bbox[2])
+        self.norte.setValue(bbox[3])
+        self.mapa.exibir_bbox(bbox)
+        self.area_mensagem.setText(mensagem)
+        self._atualizar_preview_yaml()
+
+    def _alternar_desenho(self, ativo: bool) -> None:
+        if ativo and not self.mapa.ativar_desenho(True):
+            self.btn_desenhar_area.setChecked(False)
+            self.area_mensagem.setText(
+                "O mapa ainda não está pronto. Aguarde o carregamento ou edite as coordenadas."
+            )
+            return
+        if not ativo:
+            self.mapa.ativar_desenho(False)
+            return
+        self.area_mensagem.setText("Clique e arraste no mapa para desenhar a área.")
+
+    def _desenho_concluido(self) -> None:
+        self.btn_desenhar_area.blockSignals(True)
+        self.btn_desenhar_area.setChecked(False)
+        self.btn_desenhar_area.blockSignals(False)
+
+    def _importar_limite(self) -> None:
+        caminho, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Importar limite da área",
+            str(Path.home()),
+            "Limites geográficos (*.geojson *.json *.shp)",
+        )
+        if caminho:
+            self._importar_limite_de(Path(caminho))
+
+    def _importar_limite_de(self, caminho: Path) -> AreaImportada | None:
+        try:
+            area = importar_area(caminho)
+        except (OSError, ValueError) as erro:
+            QtWidgets.QMessageBox.warning(self, "Não foi possível importar o limite", str(erro))
+            return None
+        mensagem = f"Limite importado de {area.origem} ({area.crs_origem})."
+        if area.avisos:
+            mensagem += " " + " ".join(area.avisos)
+        self._aplicar_area(area.nome, self.uf.text(), list(area.bbox), mensagem)
+        return area
+
+    def _recarregar_favoritas(self) -> None:
+        if not hasattr(self, "favoritos_area"):
+            return
+        self.favoritos_area.clear()
+        perfis = self.store.listar()
+        for perfil in perfis:
+            item = QtWidgets.QListWidgetItem(f"{perfil['nome_regiao']} ({perfil['uf'] or '—'})")
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, int(perfil["id"]))
+            self.favoritos_area.addItem(item)
+        if not perfis:
+            vazio = QtWidgets.QListWidgetItem("Nenhuma região salva ainda.")
+            vazio.setFlags(QtCore.Qt.ItemFlag.NoItemFlags)
+            self.favoritos_area.addItem(vazio)
+
+    def _abrir_favorita(self, item: QtWidgets.QListWidgetItem) -> None:
+        perfil_id = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        if perfil_id is not None:
+            self._abrir_favorita_por_id(int(perfil_id))
+
+    def _abrir_favorita_por_id(self, perfil_id: int) -> None:
+        perfil = self.store.carregar(perfil_id)
+        if perfil is None:
+            return
+        self._aplicar_dados(json.loads(perfil["payload"]))
+        self.area_mensagem.setText(f"Região favorita '{perfil['nome_regiao']}' aberta.")
 
     def _pagina_dados(self) -> QtWidgets.QWidget:
         pagina = QtWidgets.QWidget()
@@ -1360,6 +1587,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _conectar_eventos(self) -> None:
         self.mapa.areaSelecionada.connect(self._receber_bbox)
+        self.mapa.desenhoConcluido.connect(self._desenho_concluido)
         self.operacao.currentIndexChanged.connect(self._atualizar_operacao)
         self.btn_salvar.clicked.connect(self._salvar_configuracao)
         self.btn_executar.clicked.connect(self._executar)
@@ -1368,6 +1596,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _navegar(self, indice: int) -> None:
         self.stack.setCurrentIndex(indice)
+        # Mantém o menu lateral coerente quando a navegação parte de um botão da página.
+        self.botoes_navegacao[indice].setChecked(True)
         self.titulo_pagina.setText(self.PAGINAS[indice][0])
         self.subtitulo_pagina.setText(self.PAGINAS[indice][1])
         titulo = self.PAGINAS[indice][0]
@@ -1776,7 +2006,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _receber_bbox(self, bbox: object) -> None:
         if not isinstance(bbox, list):
-            self.statusBar().showMessage("Desenhe uma área com Shift + arraste no mapa.", 5000)
+            self.statusBar().showMessage(
+                "Desenhe uma área com \"Desenhar área\" ou Shift + arraste no mapa.", 5000
+            )
             return
         try:
             oeste, sul, leste, norte = normalizar_bbox(bbox)
@@ -1793,11 +2025,12 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             item_id = self.store.salvar(self._coletar_dados())
             self._recarregar_perfis()
-            self.statusBar().showMessage(f"Perfil local #{item_id} salvo.", 5000)
+            self.statusBar().showMessage(f"Região favorita #{item_id} salva.", 5000)
         except Exception as erro:
             QtWidgets.QMessageBox.critical(self, "Erro ao salvar perfil", str(erro))
 
     def _recarregar_perfis(self) -> None:
+        self._recarregar_favoritas()
         self.perfis.clear()
         grupos = self.store.listar_por_uf()
         if not grupos:
