@@ -2345,16 +2345,23 @@ class MainWindow(QtWidgets.QMainWindow):
         linhas = sorted({indice.row() for indice in self.lab_grade.selectedIndexes()})
         return [self._lab_visiveis[linha].patch_id for linha in linhas if linha < len(self._lab_visiveis)]
 
-    def _lab_contexto(self) -> tuple[ConfiguracaoProjeto, Path, RepositorioLaboratorio] | None:
+    def _lab_contexto(
+        self, criar: bool = True
+    ) -> tuple[ConfiguracaoProjeto, Path, RepositorioLaboratorio] | None:
+        """Abre o laboratório. Com `criar=False`, não grava configuração nem cria o banco."""
         try:
             config = self._config_painel()
-            if config is None:
+            if config is None and criar:
                 caminho = self._salvar_configuracao(avisar=False)
                 config = ConfiguracaoProjeto.carregar(Path(caminho), raiz=ROOT) if caminho else None
             if config is None:
                 return None
             pasta = resolver_pasta_laboratorio(config)
-            return config, pasta, RepositorioLaboratorio(pasta / "laboratorio.sqlite3")
+            banco = pasta / "laboratorio.sqlite3"
+            if not criar and not banco.is_file():
+                # Só visualizar a página não deve criar pastas ou bancos vazios.
+                return None
+            return config, pasta, RepositorioLaboratorio(banco)
         except (OSError, TypeError, ValueError, KeyError, yaml.YAMLError) as erro:
             self.lab_status.setText(f"Laboratório indisponível: {erro}")
             return None
@@ -2364,7 +2371,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return int(valor) if valor is not None else None
 
     def _lab_recarregar_projetos(self, selecionar: int | None = None) -> None:
-        contexto = self._lab_contexto()
+        contexto = self._lab_contexto(criar=False)
         atual = selecionar if selecionar is not None else self._lab_projeto_id()
         self.lab_projeto.blockSignals(True)
         self.lab_projeto.clear()
