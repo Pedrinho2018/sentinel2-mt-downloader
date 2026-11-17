@@ -27,6 +27,8 @@ EXTENSOES_IMAGEM = {".png", ".jpg", ".jpeg"}
 LIMITE_IMAGEM_BYTES = 100 * 1024 * 1024
 STATUS_APROVADOS = {"APROVADO", "APROVADO_SEM_SCL"}
 TILE_RE = re.compile(r"_(\d{6})_\d{8}$")
+# Sentinel-2 L2A (ESA): ..._N0512_R024_T21LYD_20260914T175514 -> tile MGRS 21LYD
+MGRS_RE = re.compile(r"_T(\d{2}[C-X][A-Z]{2})_")
 PATCH_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,160}$")
 Progresso = Callable[[int, int], None]
 
@@ -69,8 +71,14 @@ def safra_de(data: str) -> str:
 
 
 def tile_de(cena: str) -> str:
-    """Código da grade BDC no ID da cena (ex.: S2-16D_V2_014015_20260423 -> 014015)."""
+    """Grade da cena: BDC (S2-16D_V2_014015_20260423 -> 014015) ou MGRS no L2A (-> 21LYD).
+
+    A grade é a mesma em todas as datas, o que permite agrupar o mesmo lugar no tempo.
+    """
     correspondencia = TILE_RE.search(cena or "")
+    if correspondencia:
+        return correspondencia.group(1)
+    correspondencia = MGRS_RE.search(cena or "")
     return correspondencia.group(1) if correspondencia else ""
 
 

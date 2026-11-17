@@ -127,6 +127,7 @@ class TestDatasets(BaseLaboratorio):
         self.assertEqual(safra_de("sem_data"), "")
         self.assertEqual(tile_de("S2-16D_V2_014015_20260423"), "014015")
         self.assertEqual(tile_de("outra"), "")
+        self.assertEqual(tile_de("S2C_MSIL2A_20260914T134701_N0512_R024_T21LYD_20260914T175514"), "21LYD")
 
     def test_descobre_pela_pasta_quando_catalogo_ausente(self) -> None:
         self.criar_patch("P_x000000_y000000_8", "2026-03-22")
