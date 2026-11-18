@@ -34,6 +34,16 @@ ROTULOS_TIPO = {
 }
 ESTADOS_ROTULO = ("pendente", "rotulada", "revisar")
 ESTADOS_INTEGRIDADE = ("nao_verificada", "ok", "ausente", "alterada", "ilegivel")
+# Triagem de adequação (independe do estado de rotulagem). Imagens com rótulo
+# são sempre "protegida" ou "revisar" e nunca podem ser arquivadas.
+TRIAGENS = ("aprovada", "revisar", "descartar", "protegida")
+COLUNAS_TRIAGEM = (
+    ("triagem", "TEXT NOT NULL DEFAULT ''"),
+    ("triagem_motivo", "TEXT NOT NULL DEFAULT ''"),
+    ("arquivada", "INTEGER NOT NULL DEFAULT 0"),
+    ("arquivada_em", "TEXT NOT NULL DEFAULT ''"),
+    ("motivo_arquivamento", "TEXT NOT NULL DEFAULT ''"),
+)
 CLASSE_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 LIMITE_CLASSES = 100
 
@@ -79,6 +89,11 @@ class ImagemDataset:
     integridade: str = "nao_verificada"
     duplicata_de: str = ""
     adicionada_em: str = ""
+    triagem: str = ""
+    triagem_motivo: str = ""
+    arquivada: int = 0
+    arquivada_em: str = ""
+    motivo_arquivamento: str = ""
 
     def para_dict(self) -> dict:
         return asdict(self)
@@ -185,8 +200,22 @@ class RepositorioLaboratorio:
                     FOREIGN KEY (projeto_id, patch_id) REFERENCES imagens(projeto_id, patch_id)
                         ON DELETE CASCADE
                 );
+                CREATE TABLE IF NOT EXISTS historico_imagens (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    projeto_id INTEGER NOT NULL,
+                    patch_id TEXT NOT NULL,
+                    acao TEXT NOT NULL,
+                    detalhe TEXT NOT NULL DEFAULT '',
+                    em TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_historico ON historico_imagens(projeto_id, patch_id);
                 """
             )
+            # Migração aditiva: bancos antigos ganham as colunas de triagem/arquivamento.
+            existentes = {linha["name"] for linha in conexao.execute("PRAGMA table_info(imagens)")}
+            for nome, definicao in COLUNAS_TRIAGEM:
+                if nome not in existentes:
+                    conexao.execute(f"ALTER TABLE imagens ADD COLUMN {nome} {definicao}")
         os.chmod(self.caminho_banco, 0o600)
 
     # ------------------------------------------------------------------ projetos
@@ -287,10 +316,11 @@ class RepositorioLaboratorio:
         self.recalcular_duplicatas(projeto_id)
         return novas, len(imagens) - novas
 
-    def listar_imagens(self, projeto_id: int) -> list[ImagemDataset]:
+    def listar_imagens(self, projeto_id: int, *, incluir_arquivadas: bool = True) -> list[ImagemDataset]:
+        filtro = "" if incluir_arquivadas else " AND arquivada = 0"
         with self._conectar() as conexao:
             linhas = conexao.execute(
-                "SELECT * FROM imagens WHERE projeto_id = ? ORDER BY data, patch_id",
+                f"SELECT * FROM imagens WHERE projeto_id = ?{filtro} ORDER BY data, patch_id",
                 (projeto_id,),
             ).fetchall()
         campos = ImagemDataset.__dataclass_fields__
@@ -307,8 +337,15 @@ class RepositorioLaboratorio:
             )
 
     def remover_imagens(self, projeto_id: int, patch_ids: list[str]) -> int:
-        """Remove imagens do projeto (só os registros; arquivos não são apagados)."""
+        """Remove imagens do projeto (só os registros; arquivos não são apagados).
+
+        Imagens com rótulo ou anotação são recusadas: para tirá-las de uso, não há
+        caminho que apague rótulos; use a triagem "revisar".
+        """
         with self._conectar() as conexao:
+            protegidas = self._com_rotulo(conexao, projeto_id, list(patch_ids))
+            if protegidas:
+                raise ValueError(f"Imagem rotulada não pode ser removida: {sorted(protegidas)[0]}")
             cursor = conexao.executemany(
                 "DELETE FROM imagens WHERE projeto_id = ? AND patch_id = ?",
                 [(projeto_id, patch_id) for patch_id in patch_ids],
@@ -316,6 +353,153 @@ class RepositorioLaboratorio:
             removidas = cursor.rowcount
         self.recalcular_duplicatas(projeto_id)
         return removidas
+
+    # ------------------------------------------------------- triagem/arquivamento
+
+    def _com_rotulo(self, conexao, projeto_id: int, patch_ids: list[str]) -> set[str]:
+        """IDs que têm rótulo, anotação ou estado diferente de 'pendente'."""
+        if not patch_ids:
+            return set()
+        marcas = ",".join("?" for _ in patch_ids)
+        consulta = f"""
+            SELECT patch_id FROM imagens WHERE projeto_id = ? AND patch_id IN ({marcas}) AND estado_rotulo != 'pendente'
+            UNION SELECT patch_id FROM anotacoes_deteccao WHERE projeto_id = ? AND patch_id IN ({marcas})
+            UNION SELECT patch_id FROM rotulos_classificacao WHERE projeto_id = ? AND patch_id IN ({marcas})"""
+        parametros = [projeto_id, *patch_ids] * 3
+        return {linha["patch_id"] for linha in conexao.execute(consulta, parametros)}
+
+    def _historico(self, conexao, projeto_id: int, registros: list[tuple[str, str, str]]) -> None:
+        agora = _agora()
+        conexao.executemany(
+            "INSERT INTO historico_imagens (projeto_id, patch_id, acao, detalhe, em) VALUES (?, ?, ?, ?, ?)",
+            [(projeto_id, patch_id, acao, detalhe, agora) for patch_id, acao, detalhe in registros],
+        )
+
+    def registrar_triagem(self, projeto_id: int, decisoes: dict[str, tuple[str, str]]) -> int:
+        """Grava a triagem {patch_id: (triagem, motivo)} numa única transação.
+
+        Imagens rotuladas só aceitam "protegida" ou "revisar"; "protegida" só vale
+        para imagens rotuladas. Qualquer violação cancela o lote inteiro.
+        """
+        for patch_id, (triagem, motivo) in decisoes.items():
+            if triagem not in TRIAGENS:
+                raise ValueError(f"Triagem inválida para {patch_id}: {triagem}")
+            if triagem in {"descartar", "revisar"} and not str(motivo).strip():
+                raise ValueError(f"Informe o motivo da triagem '{triagem}' de {patch_id}.")
+        with self._conectar() as conexao:
+            ids = self._ids_existentes(conexao, projeto_id, list(decisoes))
+            rotuladas = self._com_rotulo(conexao, projeto_id, ids)
+            for patch_id in ids:
+                triagem = decisoes[patch_id][0]
+                if patch_id in rotuladas and triagem not in {"protegida", "revisar"}:
+                    raise ValueError(f"Imagem rotulada só pode ser 'protegida' ou 'revisar': {patch_id}")
+                if patch_id not in rotuladas and triagem == "protegida":
+                    raise ValueError(f"'protegida' é reservado a imagens rotuladas: {patch_id}")
+            conexao.executemany(
+                "UPDATE imagens SET triagem = ?, triagem_motivo = ? WHERE projeto_id = ? AND patch_id = ?",
+                [(decisoes[p][0], str(decisoes[p][1]).strip(), projeto_id, p) for p in ids],
+            )
+            self._historico(conexao, projeto_id, [
+                (p, "triagem", json.dumps({"triagem": decisoes[p][0], "motivo": decisoes[p][1]}, ensure_ascii=False))
+                for p in ids
+            ])
+        return len(ids)
+
+    def arquivar_imagens(self, projeto_id: int, patch_ids: list[str], motivo: str) -> int:
+        """Arquivamento lógico e reversível: a imagem sai dos lotes e da lista ativa.
+
+        Nenhum arquivo é apagado e o catálogo científico não muda. Imagens com
+        rótulo/anotação são recusadas (a operação inteira é cancelada).
+        """
+        motivo = str(motivo).strip()
+        if not motivo:
+            raise ValueError("Informe o motivo do arquivamento.")
+        with self._conectar() as conexao:
+            ids = self._ids_existentes(conexao, projeto_id, list(dict.fromkeys(patch_ids)))
+            protegidas = self._com_rotulo(conexao, projeto_id, ids)
+            if protegidas:
+                raise ValueError(f"Imagem rotulada não pode ser arquivada: {sorted(protegidas)[0]}")
+            ativas = [
+                l["patch_id"] for l in conexao.execute(
+                    f"SELECT patch_id FROM imagens WHERE projeto_id = ? AND arquivada = 0 AND patch_id IN ({','.join('?' for _ in ids)})",
+                    (projeto_id, *ids),
+                )
+            ] if ids else []
+            agora = _agora()
+            conexao.executemany(
+                "UPDATE imagens SET arquivada = 1, arquivada_em = ?, motivo_arquivamento = ? WHERE projeto_id = ? AND patch_id = ?",
+                [(agora, motivo, projeto_id, p) for p in ativas],
+            )
+            self._historico(conexao, projeto_id, [(p, "arquivar", motivo) for p in ativas])
+        return len(ativas)
+
+    def retirar_rotuladas(self, projeto_id: int, patch_ids: list[str], motivo: str) -> int:
+        """Retira do projeto imagens ROTULADAS, por decisão explícita do usuário.
+
+        Diferente de `arquivar_imagens` (que recusa rotuladas), aqui a anotação e o
+        rótulo continuam guardados no banco, sem alteração: a imagem só fica
+        arquivada e com estado "revisar" (fora do treino e dos lotes).
+        `restaurar_imagens` devolve o estado anterior.
+        """
+        motivo = str(motivo).strip()
+        if not motivo:
+            raise ValueError("Informe o motivo da retirada.")
+        with self._conectar() as conexao:
+            ids = self._ids_existentes(conexao, projeto_id, list(dict.fromkeys(patch_ids)))
+            marcas = ",".join("?" for _ in ids)
+            linhas = conexao.execute(
+                f"SELECT patch_id, estado_rotulo, arquivada FROM imagens WHERE projeto_id = ? AND patch_id IN ({marcas})",
+                (projeto_id, *ids),
+            ).fetchall() if ids else []
+            alvo = [l for l in linhas if not l["arquivada"]]
+            agora = _agora()
+            conexao.executemany(
+                """UPDATE imagens SET arquivada = 1, arquivada_em = ?, motivo_arquivamento = ?, estado_rotulo = 'revisar',
+                triagem = 'revisar', triagem_motivo = ? WHERE projeto_id = ? AND patch_id = ?""",
+                [(agora, motivo, motivo, projeto_id, l["patch_id"]) for l in alvo],
+            )
+            self._historico(conexao, projeto_id, [
+                (l["patch_id"], "retirar", json.dumps({"motivo": motivo, "estado_anterior": l["estado_rotulo"]}, ensure_ascii=False))
+                for l in alvo
+            ])
+        return len(alvo)
+
+    def restaurar_imagens(self, projeto_id: int, patch_ids: list[str], motivo: str = "") -> int:
+        """Desfaz o arquivamento (a triagem é mantida para rastreabilidade).
+
+        Imagens retiradas com `retirar_rotuladas` voltam ao estado de rotulagem anterior.
+        """
+        with self._conectar() as conexao:
+            ids = self._ids_existentes(conexao, projeto_id, list(dict.fromkeys(patch_ids)))
+            arquivadas = [
+                l["patch_id"] for l in conexao.execute(
+                    f"SELECT patch_id FROM imagens WHERE projeto_id = ? AND arquivada = 1 AND patch_id IN ({','.join('?' for _ in ids)})",
+                    (projeto_id, *ids),
+                )
+            ] if ids else []
+            conexao.executemany(
+                "UPDATE imagens SET arquivada = 0, arquivada_em = '', motivo_arquivamento = '' WHERE projeto_id = ? AND patch_id = ?",
+                [(projeto_id, p) for p in arquivadas],
+            )
+            for p in arquivadas:
+                ultima = conexao.execute(
+                    "SELECT acao, detalhe FROM historico_imagens WHERE projeto_id = ? AND patch_id = ? ORDER BY id DESC LIMIT 1",
+                    (projeto_id, p),
+                ).fetchone()
+                if ultima is not None and ultima["acao"] == "retirar":
+                    anterior = json.loads(ultima["detalhe"]).get("estado_anterior", "pendente")
+                    self._definir_estado(conexao, projeto_id, [p], anterior)
+            self._historico(conexao, projeto_id, [(p, "restaurar", str(motivo).strip()) for p in arquivadas])
+        return len(arquivadas)
+
+    def historico_imagens(self, projeto_id: int, patch_id: str | None = None) -> list[dict]:
+        filtro, parametros = ("AND patch_id = ?", (projeto_id, patch_id)) if patch_id else ("", (projeto_id,))
+        with self._conectar() as conexao:
+            linhas = conexao.execute(
+                f"SELECT patch_id, acao, detalhe, em FROM historico_imagens WHERE projeto_id = ? {filtro} ORDER BY id",
+                parametros,
+            ).fetchall()
+        return [dict(l) for l in linhas]
 
     def recalcular_duplicatas(self, projeto_id: int) -> None:
         """Marca cópias de mesmo SHA-256; a primeira (por patch_id) é a referência."""
@@ -471,9 +655,17 @@ class RepositorioLaboratorio:
         return len(marcadas)
 
     def contagens(self, projeto_id: int) -> dict[str, int]:
-        imagens = self.listar_imagens(projeto_id)
+        """Estados de rotulagem e integridade contam só as imagens ativas (não arquivadas)."""
+        todas = self.listar_imagens(projeto_id)
+        imagens = [i for i in todas if not i.arquivada]
         return {
-            "total": len(imagens),
+            "total": len(todas),
+            "ativas": len(imagens),
+            "arquivadas": len(todas) - len(imagens),
+            "aprovadas": sum(1 for i in imagens if i.triagem == "aprovada"),
+            "triagem_revisar": sum(1 for i in imagens if i.triagem == "revisar"),
+            "protegidas": sum(1 for i in imagens if i.triagem == "protegida"),
+            "sem_triagem": sum(1 for i in imagens if not i.triagem),
             "pendentes": sum(1 for i in imagens if i.estado_rotulo == "pendente"),
             "rotuladas": sum(1 for i in imagens if i.estado_rotulo == "rotulada"),
             "revisar": sum(1 for i in imagens if i.estado_rotulo == "revisar"),

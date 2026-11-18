@@ -41,6 +41,9 @@ AMBIENTE_GDAL = {
     "GDAL_HTTP_MAX_RETRY": "4",
     "GDAL_HTTP_RETRY_DELAY": "3",
     "GDAL_HTTP_MULTIRANGE": "YES",
+    # Sem prazo, uma conexão parada no servidor deixa o lote travado indefinidamente.
+    "GDAL_HTTP_CONNECTTIMEOUT": "20",
+    "GDAL_HTTP_TIMEOUT": "90",
     "VSI_CACHE": "TRUE",
 }
 
@@ -151,13 +154,17 @@ class AmostradorJanelas:
         raiz: Path,
         cliente_stac,
         abrir_raster: Callable | None = None,
+        anotar: Callable | None = None,
     ) -> None:
+        """`anotar(crs, transform, largura, altura, bounds_wgs84) -> dict` acrescenta ao
+        metadata uma referência externa (ex.: uso do solo) calculada na grade exata do recorte."""
         import rasterio
 
         self.pasta_saida = Path(pasta_saida)
         self.raiz = Path(raiz).resolve()
         self.cliente = cliente_stac
         self.abrir = abrir_raster or rasterio.open
+        self.anotar = anotar
 
     # ------------------------------------------------------------------ candidatas
 
@@ -319,6 +326,11 @@ class AmostradorJanelas:
             },
             "resampling": "nenhum (janelas na grade nativa: 10 m nas bandas, 20 m na SCL)",
         }
+        if self.anotar is not None:
+            try:
+                metadata["referencia_uso_solo"] = self.anotar(perfil["crs"], perfil["transform"], tamanho, tamanho, bounds_wgs84)
+            except Exception as erro:  # noqa: BLE001 - a referência é auxiliar; não invalida a amostra
+                metadata["referencia_uso_solo"] = {"erro": f"{type(erro).__name__}: {erro}"[:200]}
         (pasta / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
         resultado.patch_id = patch_id
         resultado.pasta = pasta.resolve().relative_to(self.raiz).as_posix()

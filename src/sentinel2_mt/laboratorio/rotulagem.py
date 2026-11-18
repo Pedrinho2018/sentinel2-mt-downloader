@@ -129,6 +129,57 @@ def pasta_lotes(pasta_laboratorio: Path, projeto_id: int) -> Path:
     return pasta_laboratorio / "projetos" / str(int(projeto_id)) / "rotulagem"
 
 
+class LoteComPendencias(ValueError):
+    """O lote atual tem anotações não importadas (ou diferentes do banco)."""
+
+
+def pendencias_do_lote(repo: RepositorioLaboratorio, projeto_id: int, pasta: Path) -> list[str]:
+    """Arquivos .txt do lote que não estão no banco ou diferem do que foi importado."""
+    rotulos = pasta / "labels"
+    if not rotulos.is_dir():
+        return []
+    anotacoes = repo.anotacoes_deteccao(projeto_id)
+    arquivadas = {i.patch_id for i in repo.listar_imagens(projeto_id) if i.arquivada}
+    pendentes = []
+    for txt in sorted(rotulos.glob("*.txt")):
+        if txt.name == "classes.txt" or txt.stem in arquivadas:
+            continue
+        conteudo = txt.read_text(encoding="utf-8", errors="replace")
+        importada = anotacoes.get(txt.stem)
+        if importada is None:
+            if conteudo.strip():
+                pendentes.append(txt.name)
+        elif conteudo != importada["conteudo"]:
+            pendentes.append(txt.name)
+    return pendentes
+
+
+def arquivar_lote_atual(repo: RepositorioLaboratorio, projeto_id: int, pasta_laboratorio: Path) -> Path | None:
+    """Move o `lote-atual` para `lotes-anteriores/<data>` (nunca apaga).
+
+    Recusa com LoteComPendencias se houver anotação .txt não importada ou
+    alterada depois da importação: importe (ou revise) antes de trocar o lote.
+    """
+    base = pasta_lotes(pasta_laboratorio, projeto_id)
+    pasta = base / "lote-atual"
+    if not pasta.exists():
+        return None
+    pendentes = pendencias_do_lote(repo, projeto_id, pasta)
+    if pendentes:
+        raise LoteComPendencias(
+            f"O lote atual tem {len(pendentes)} anotação(ões) não importada(s) ou alterada(s) "
+            f"(ex.: {pendentes[0]}). Importe as anotações antes de preparar outro lote."
+        )
+    destino = base / "lotes-anteriores" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    sufixo = 1
+    while destino.exists():
+        destino = destino.with_name(f"{destino.name.split('-')[0]}-{sufixo}")
+        sufixo += 1
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(pasta), str(destino))
+    return destino
+
+
 def preparar_lote(
     repo: RepositorioLaboratorio,
     projeto_id: int,
@@ -151,7 +202,7 @@ def preparar_lote(
     if limite <= 0:
         raise ValueError("O lote precisa ter ao menos uma imagem.")
     esquema = repo.esquema_atual(projeto_id)
-    imagens = repo.listar_imagens(projeto_id)
+    imagens = repo.listar_imagens(projeto_id, incluir_arquivadas=False)
     if patch_ids is not None:
         escolhidas = set(patch_ids)
         candidatas = [imagem for imagem in imagens if imagem.patch_id in escolhidas]
@@ -160,15 +211,14 @@ def preparar_lote(
     candidatas = [
         imagem
         for imagem in candidatas
-        if not imagem.duplicata_de and imagem.integridade not in {"ausente", "alterada", "ilegivel"}
+        if imagem.triagem != "descartar" and not imagem.duplicata_de and imagem.integridade not in {"ausente", "alterada", "ilegivel"}
     ][:limite]
     if not candidatas:
         raise ValueError("Nenhuma imagem disponível para o lote com os critérios escolhidos.")
 
     pasta = pasta_lotes(pasta_laboratorio, projeto_id) / "lote-atual"
-    if pasta.exists():
-        # O lote anterior é substituído; anotações importadas já estão no banco.
-        shutil.rmtree(pasta)
+    # O lote anterior é preservado em lotes-anteriores/ (recusa se houver anotação não importada).
+    arquivar_lote_atual(repo, projeto_id, pasta_laboratorio)
     pasta_imagens = pasta / "images"
     pasta_rotulos = pasta / "labels"
     pasta_imagens.mkdir(parents=True)
@@ -251,6 +301,7 @@ def importar_anotacoes(
         raise ValueError("O esquema de classes do lote não confere com o registrado no projeto.")
 
     resumo = ResumoImportacao()
+    arquivadas = {i.patch_id for i in repo.listar_imagens(projeto_id) if i.arquivada}
     # Ferramentas como o LabelImg acrescentam classes novas ao classes.txt.
     for arquivo_classes in (lote.classes, lote.rotulos / "classes.txt"):
         if arquivo_classes.is_file():
@@ -264,6 +315,9 @@ def importar_anotacoes(
 
     for item in dados.get("itens", []):
         patch_id = str(item.get("patch_id", ""))
+        if patch_id in arquivadas:
+            resumo.avisos.append(f"{patch_id}: imagem arquivada/retirada do projeto; anotação do lote ignorada.")
+            continue
         imagem = lote.imagens / str(item.get("arquivo", ""))
         candidatos = (lote.rotulos / f"{patch_id}.txt", lote.imagens / f"{patch_id}.txt")
         arquivo = next((c for c in candidatos if c.is_file() and not c.is_symlink()), None)

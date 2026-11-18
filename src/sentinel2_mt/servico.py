@@ -40,8 +40,8 @@ def politica_retentativa_stac() -> Retry:
     )
 
 
-def abrir_cliente_stac(url: str) -> Client:
-    return Client.open(url, stac_io=StacApiIO(max_retries=politica_retentativa_stac()))
+def abrir_cliente_stac(url: str, timeout: float | tuple[float, float] | None = None) -> Client:
+    return Client.open(url, stac_io=StacApiIO(max_retries=politica_retentativa_stac(), timeout=timeout))
 
 
 @dataclass(frozen=True)

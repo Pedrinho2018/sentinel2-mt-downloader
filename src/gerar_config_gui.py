@@ -2305,8 +2305,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self.lab_filtro_rotulo.addItem(texto, valor)
         self.lab_filtro_duplicatas = QtWidgets.QCheckBox("Só duplicatas")
         self.lab_filtro_problemas = QtWidgets.QCheckBox("Só com problema")
+        self.lab_filtro_situacao = QtWidgets.QComboBox()
+        self.lab_filtro_situacao.setToolTip("Triagem de adequação; arquivadas ficam fora dos lotes")
+        for texto, valor in (
+            ("Ativas", "ativas"), ("Aprovadas (agrícolas)", "aprovada"), ("Triagem: revisar", "revisar"),
+            ("Protegidas (rotuladas)", "protegida"), ("Arquivadas", "arquivadas"), ("Todas", "todas"),
+        ):
+            self.lab_filtro_situacao.addItem(texto, valor)
         for widget in (
-            self.lab_filtro_texto, self.lab_filtro_safra, self.lab_filtro_nuvem,
+            self.lab_filtro_texto, self.lab_filtro_situacao, self.lab_filtro_safra, self.lab_filtro_nuvem,
             self.lab_filtro_rotulo, self.lab_filtro_duplicatas, self.lab_filtro_problemas,
         ):
             filtros.addWidget(widget, 2 if widget is self.lab_filtro_texto else 0)
@@ -2316,7 +2323,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self.lab_filtro_rotulo.currentIndexChanged.connect(self._lab_renderizar)
         self.lab_filtro_duplicatas.toggled.connect(self._lab_renderizar)
         self.lab_filtro_problemas.toggled.connect(self._lab_renderizar)
+        self.lab_filtro_situacao.currentIndexChanged.connect(self._lab_renderizar)
         imagens.layout_principal.addLayout(filtros)
+        triagem = QtWidgets.QHBoxLayout()
+        self.lab_btn_aprovar = botao("Aprovar")
+        self.lab_btn_aprovar.setToolTip("Marca as selecionadas como adequadas (talhões agrícolas visíveis)")
+        self.lab_btn_aprovar.clicked.connect(lambda: self._lab_triagem("aprovada"))
+        self.lab_btn_inadequada = botao("Marcar inadequada e arquivar…")
+        self.lab_btn_inadequada.setToolTip(
+            "Arquivamento lógico e reversível: nada é apagado; imagens rotuladas são recusadas"
+        )
+        self.lab_btn_inadequada.clicked.connect(self._lab_arquivar_selecionadas)
+        self.lab_btn_restaurar = botao("Restaurar")
+        self.lab_btn_restaurar.setToolTip("Devolve imagens arquivadas à lista ativa")
+        self.lab_btn_restaurar.clicked.connect(self._lab_restaurar_selecionadas)
+        for item in (self.lab_btn_aprovar, self.lab_btn_inadequada, self.lab_btn_restaurar):
+            triagem.addWidget(item)
+        triagem.addStretch()
+        imagens.layout_principal.addLayout(triagem)
 
         divisor = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self.lab_grade = QtWidgets.QListWidget()
@@ -2396,7 +2420,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def _lab_projeto_alterado(self) -> None:
         projeto_id = self._lab_projeto_id()
         tem_projeto = projeto_id is not None
-        for item in (self.lab_btn_classes, self.lab_btn_importar, self.lab_btn_externas, self.lab_btn_integridade):
+        for item in (
+            self.lab_btn_classes, self.lab_btn_importar, self.lab_btn_externas, self.lab_btn_integridade,
+            self.lab_btn_aprovar, self.lab_btn_inadequada, self.lab_btn_restaurar,
+        ):
             item.setEnabled(tem_projeto and not self._lab_ocupado)
         contexto = self._lab_contexto() if tem_projeto else None
         if contexto is None or projeto_id is None:
@@ -2434,7 +2461,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.lab_filtro_safra.blockSignals(False)
         contagens = repo.contagens(projeto_id)
         self.lab_contagens.setText(
-            f"<b>{contagens['total']}</b> imagem(ns) • {contagens['pendentes']} pendente(s) • "
+            f"<b>{contagens['ativas']}</b> ativa(s) de {contagens['total']} • "
+            f"{contagens['aprovadas']} aprovada(s) • {contagens['arquivadas']} arquivada(s) • "
+            f"{contagens['pendentes']} pendente(s) • "
             f"{contagens['rotuladas']} rotulada(s) • {contagens['revisar']} a revisar • "
             f"{contagens['duplicatas']} duplicata(s) • {contagens['problemas']} com problema • "
             f"{contagens['nao_verificadas']} não verificada(s)"
@@ -2455,6 +2484,13 @@ class MainWindow(QtWidgets.QMainWindow):
             somente_duplicatas=self.lab_filtro_duplicatas.isChecked(),
             somente_problemas=self.lab_filtro_problemas.isChecked(),
         )
+        situacao = self.lab_filtro_situacao.currentData() or "ativas"
+        if situacao == "arquivadas":
+            self._lab_visiveis = [i for i in self._lab_visiveis if i.arquivada]
+        elif situacao != "todas":
+            self._lab_visiveis = [i for i in self._lab_visiveis if not i.arquivada]
+            if situacao != "ativas":
+                self._lab_visiveis = [i for i in self._lab_visiveis if i.triagem == situacao]
         contexto_pasta = getattr(self, "_lab_pasta_cache", None)
         self.lab_grade.clear()
         for imagem in self._lab_visiveis[:3000]:
@@ -2465,6 +2501,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 legenda = f"{self._lab_anotacoes[imagem.patch_id]['caixas']} caixa(s)"
             if imagem.estado_rotulo == "revisar":
                 legenda = "⚠ revisar"
+            if imagem.arquivada:
+                legenda = "arquivada"
+            elif imagem.triagem == "revisar" and imagem.estado_rotulo == "pendente":
+                legenda = "triagem: revisar"
             item = QtWidgets.QListWidgetItem(f"{imagem.data or 'externa'}\n{legenda}")
             if contexto_pasta is not None:
                 miniatura = caminho_miniatura(contexto_pasta, imagem)
@@ -2473,6 +2513,11 @@ class MainWindow(QtWidgets.QMainWindow):
             marcas = []
             if imagem.duplicata_de:
                 marcas.append("duplicata de " + imagem.duplicata_de)
+            if imagem.triagem_motivo:
+                marcas.append(f"triagem ({imagem.triagem}): {imagem.triagem_motivo}")
+            if imagem.arquivada:
+                marcas.append("arquivada: " + imagem.motivo_arquivamento)
+                item.setForeground(QtGui.QBrush(QtGui.QColor(CORES["texto_suave"])))
             if imagem.integridade in {"ausente", "alterada", "ilegivel"}:
                 marcas.append("integridade: " + imagem.integridade)
                 item.setForeground(QtGui.QBrush(QtGui.QColor(CORES["perigo_texto"])))
@@ -2494,6 +2539,9 @@ class MainWindow(QtWidgets.QMainWindow):
             f"Tamanho: {imagem.largura}×{imagem.altura} px",
             f"Rotulagem: {imagem.estado_rotulo}",
             f"Integridade: {imagem.integridade.replace('_', ' ')}",
+            f"Triagem: {imagem.triagem or 'não feita'}"
+            + (f" — {imagem.triagem_motivo}" if imagem.triagem_motivo else ""),
+            *([f"<b>Arquivada</b> em {imagem.arquivada_em}: {imagem.motivo_arquivamento}"] if imagem.arquivada else []),
             f"SHA-256: {imagem.sha256[:16]}…",
             f"RGB: {imagem.caminho_rgb}",
         ]
@@ -2510,6 +2558,53 @@ class MainWindow(QtWidgets.QMainWindow):
             for erro in anotacao["erros"][:5]:
                 linhas.append(f"<span style='color:{CORES['perigo_texto']}'>• {erro}</span>")
         self.lab_detalhe.setText("<br>".join(linhas))
+
+    # -------------------------------------------------------- Laboratório: triagem
+
+    def _lab_aplicar(self, operacao) -> None:
+        """Executa uma operação de triagem no repositório e mostra o resultado/recusa."""
+        projeto_id = self._lab_projeto_id()
+        ids = self._lab_selecionadas()
+        contexto = self._lab_contexto(criar=False)
+        if projeto_id is None or contexto is None:
+            return
+        if not ids:
+            self.lab_status.setText("Selecione ao menos uma imagem.")
+            return
+        try:
+            mensagem = operacao(contexto[2], projeto_id, ids)
+        except ValueError as erro:
+            QtWidgets.QMessageBox.warning(self, "Triagem", str(erro))
+            return
+        self.lab_status.setText(mensagem)
+        self._lab_projeto_alterado()
+
+    def _lab_triagem(self, triagem: str) -> None:
+        def operar(repo, projeto_id, ids):
+            n = repo.registrar_triagem(projeto_id, {i: (triagem, "") for i in ids})
+            return f"{n} imagem(ns) marcada(s) como {triagem}."
+        self._lab_aplicar(operar)
+
+    def _lab_arquivar_selecionadas(self) -> None:
+        motivo, ok = QtWidgets.QInputDialog.getText(
+            self, "Marcar inadequada", "Motivo (ex.: floresta predominante, pastagem, sem talhões):"
+        )
+        if not ok:
+            return
+
+        def operar(repo, projeto_id, ids):
+            if not motivo.strip():
+                raise ValueError("Informe o motivo.")
+            repo.registrar_triagem(projeto_id, {i: ("descartar", motivo) for i in ids})
+            n = repo.arquivar_imagens(projeto_id, ids, motivo)
+            return f"{n} imagem(ns) arquivada(s). Nenhum arquivo foi apagado; use Restaurar para desfazer."
+        self._lab_aplicar(operar)
+
+    def _lab_restaurar_selecionadas(self) -> None:
+        def operar(repo, projeto_id, ids):
+            n = repo.restaurar_imagens(projeto_id, ids, "restaurada pela interface")
+            return f"{n} imagem(ns) restaurada(s)."
+        self._lab_aplicar(operar)
 
     # -------------------------------------------------------- Laboratório: projetos
 

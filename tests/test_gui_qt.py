@@ -507,7 +507,7 @@ class TestGuiQt(TestCase):
 
         self.assertIn("2 recorte(s) encontrados na pasta do dataset", self.janela.lab_status.text())
         self.assertEqual(self.janela.lab_grade.count(), 2)
-        self.assertIn("2</b> imagem(ns)", self.janela.lab_contagens.text())
+        self.assertIn("2</b> ativa(s) de 2", self.janela.lab_contagens.text())
         self.assertFalse(self.janela.lab_grade.item(0).icon().isNull())
         safras = [self.janela.lab_filtro_safra.itemData(i) for i in range(self.janela.lab_filtro_safra.count())]
         self.assertEqual(safras, ["", "2025/2026", "2024/2025"])
@@ -528,6 +528,29 @@ class TestGuiQt(TestCase):
         self.assertEqual(self.janela.lab_grade.count(), 1)
         self.janela.lab_grade.setCurrentRow(0)
         self.assertIn("ausente", self.janela.lab_detalhe.text())
+
+    def test_laboratorio_arquiva_e_restaura_sem_apagar(self) -> None:
+        self._preparar_laboratorio()
+        self.janela._lab_criar_projeto("Talhões", "deteccao", ["talhao"])
+        self.janela._lab_importar_sistema()
+        self._aguardar_laboratorio()
+        self.janela.lab_grade.item(0).setSelected(True)
+        arquivo = self.pasta / self.janela._lab_visiveis[0].caminho_rgb
+        with patch.object(gui.QtWidgets.QInputDialog, "getText", return_value=("floresta predominante", True)):
+            self.janela._lab_arquivar_selecionadas()
+        self.assertIn("1 imagem(ns) arquivada(s)", self.janela.lab_status.text())
+        self.assertEqual(self.janela.lab_grade.count(), 1)  # filtro padrão: ativas
+        self.assertTrue(arquivo.is_file())
+        self.janela.lab_filtro_situacao.setCurrentIndex(self.janela.lab_filtro_situacao.findData("arquivadas"))
+        self.assertEqual(self.janela.lab_grade.count(), 1)
+        self.janela.lab_grade.setCurrentRow(0)
+        self.assertIn("floresta predominante", self.janela.lab_detalhe.text())
+        self.janela.lab_grade.item(0).setSelected(True)
+        self.janela._lab_restaurar_selecionadas()
+        self.assertIn("1 imagem(ns) restaurada(s)", self.janela.lab_status.text())
+        self.assertEqual(self.janela.lab_grade.count(), 0)
+        self.janela.lab_filtro_situacao.setCurrentIndex(0)
+        self.assertEqual(self.janela.lab_grade.count(), 2)
 
     def test_laboratorio_importa_externas_e_detecta_duplicata(self) -> None:
         from PIL import Image
